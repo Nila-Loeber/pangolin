@@ -1,0 +1,77 @@
+name: agent-software
+
+# Separate workflow for code tasks. Creates feature branches + PRs.
+# Thin wrapper that calls scripts/sandburg/software.py.
+
+on:
+  # schedule:
+  #   - cron: "30 5-21 * * *"  # uncomment when ready to use
+  workflow_dispatch: {}
+
+concurrency:
+  group: agent-software
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  packages: read
+
+jobs:
+  software-task:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Egress filtering
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: block
+          # Runtime-only (same minimal surface as agent-cycle.yml).
+          allowed-endpoints: >
+            api.anthropic.com:443
+            api.github.com:443
+            github.com:443
+            objects.githubusercontent.com:443
+            pypi.org:443
+            files.pythonhosted.org:443
+            gvisor.dev:443
+            storage.googleapis.com:443
+            ghcr.io:443
+
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Lowercase repo owner for GHCR
+        run: echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> $GITHUB_ENV
+
+      - name: Install gVisor
+        run: |
+          curl -fsSL https://gvisor.dev/archive.key | sudo gpg --dearmor -o /usr/share/keyrings/gvisor.gpg
+          echo "deb [signed-by=/usr/share/keyrings/gvisor.gpg] https://storage.googleapis.com/gvisor/releases release main" \
+            | sudo tee /etc/apt/sources.list.d/gvisor.list
+          sudo apt-get update -qq && sudo apt-get install -y -qq runsc
+          sudo runsc install && sudo systemctl reload docker
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Pull pre-built agent images from GHCR
+        run: |
+          docker pull ghcr.io/${{ env.OWNER_LC }}/sandburg-agent:latest
+          docker pull ghcr.io/${{ env.OWNER_LC }}/sandburg-agent-epic8:latest
+          docker tag ghcr.io/${{ env.OWNER_LC }}/sandburg-agent:latest sandburg-agent:latest
+          docker tag ghcr.io/${{ env.OWNER_LC }}/sandburg-agent-epic8:latest sandburg-agent-epic8:latest
+
+      - name: Setup
+        run: |
+          git config user.name "software-agent"
+          git config user.email "software-agent@users.noreply.github.com"
+          pip install anthropic pyyaml -q
+
+      - name: Run software task
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/sandburg/software.py

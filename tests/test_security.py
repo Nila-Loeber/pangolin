@@ -115,19 +115,19 @@ class TestSfrStruct:
         for n in ("triage","summary","self-improve","research"): assert modes()[n].json_schema
     @pytest.mark.sfr("STRUCT.3")
     def test_store_files_validated(self):
-        assert "notes/ideas/" in read(REPO/"scripts/sandburg/orchestrate.py")
+        assert "notes/ideas/" in read(REPO/"src/pangolin/orchestrate.py")
     @pytest.mark.sfr("STRUCT.2")
     def test_gh_repo_pinned(self):
-        assert "GH_REPO" in read(REPO/"scripts/sandburg/orchestrate.py")
+        assert "GH_REPO" in read(REPO/"src/pangolin/orchestrate.py")
 
 class TestSfrFlm:
     @pytest.mark.sfr("FLM.1")
     def test_FLM_1_python_enforcement(self):
-        c = read(REPO/"scripts/sandburg/tools.py")
+        c = read(REPO/"src/pangolin/tools.py")
         assert "check_readable" in c and "PermissionError" in c
     @pytest.mark.sfr("INFRA.1")
     def test_INFRA_1_self_improve_blocked(self):
-        assert "self-improve.md" in read(REPO/"scripts/sandburg/orchestrate.py")
+        assert "self-improve.md" in read(REPO/"src/pangolin/orchestrate.py")
 
 class TestHardening:
     def test_harden_runner(self):
@@ -135,7 +135,7 @@ class TestHardening:
             assert "harden-runner" in read(wf)
     @pytest.mark.sfr("FLM.1")
     def test_iteration_limit(self):
-        c = read(REPO/"scripts/sandburg/providers.py")
+        c = read(REPO/"src/pangolin/providers.py")
         assert "max_iterations" in c
 
 class TestModesConsistency:
@@ -151,8 +151,8 @@ class TestModesConsistency:
     @pytest.mark.sfr("FLM.1")
     def test_invariants_enforced_at_load(self):
         """modes.py validates invariants at load time (geohot fix)."""
-        import sandburg.modes as mm
-        assert "_validate_invariants" in dir(mm) or "validate" in open(str(REPO/"scripts/sandburg/modes.py")).read()
+        import pangolin.modes as mm
+        assert "_validate_invariants" in dir(mm) or "validate" in open(str(REPO/"src/pangolin/modes.py")).read()
 
 
 class TestEpic9PhaseSplit:

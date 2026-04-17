@@ -1,0 +1,1 @@
+../src/pangolin/default_config/validate_output.sh

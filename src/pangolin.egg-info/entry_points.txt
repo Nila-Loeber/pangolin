@@ -1,0 +1,2 @@
+[console_scripts]
+pangolin = pangolin.cli:main
