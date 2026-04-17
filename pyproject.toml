@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=64", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sandburg"
+description = "Owner-triggered conversational cycles for wiki repos"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "Nila Loeber"}]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+]
+dynamic = ["version"]
+dependencies = [
+    "anthropic>=0.40",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+    "build>=1.0",
+]
+
+[project.scripts]
+sandburg = "sandburg.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Nila-Loeber/sandburg"
+Issues = "https://github.com/Nila-Loeber/sandburg/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+sandburg = [
+    "default_config/*.yml",
+    "default_config/*.md",
+    "default_config/*.sh",
+    "default_config/docs/*.md",
+    "default_config/workflows/*.yml",
+]
+
+[tool.setuptools_scm]
+# Version from git tags. First release: `git tag v0.1.0`
