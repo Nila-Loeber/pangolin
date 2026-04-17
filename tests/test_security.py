@@ -1,4 +1,4 @@
-"""Security test suite for Sandburg. Structured by SFR."""
+"""Security test suite for Pangolin. Structured by SFR."""
 import subprocess, sys
 from pathlib import Path
 import pytest, yaml
@@ -6,6 +6,7 @@ import pytest, yaml
 REPO = Path(__file__).parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 from pangolin.modes import load_modes
+from pangolin.paths import validate_output_script
 from pangolin.tools import ToolConfig, ToolExecutor
 
 def read(p): return p.read_text()
@@ -75,7 +76,7 @@ class TestSfrFs:
         v.parent.mkdir(parents=True, exist_ok=True)
         try:
             v.write_text("plain text, no yaml frontmatter at all\n")
-            r = subprocess.run(["bash",str(REPO/"scripts/validate-output.sh"),"research"],capture_output=True,text=True,cwd=str(REPO))
+            r = subprocess.run(["bash",str(validate_output_script()),"research"],capture_output=True,text=True,cwd=str(REPO))
             assert "missing frontmatter" in r.stderr
             assert not v.exists()
         finally: v.unlink(missing_ok=True)
@@ -87,7 +88,7 @@ class TestSfrFs:
         original = wm.read_text() if wm.exists() else ""
         try:
             wm.write_text("2099-01-01T00:00:00Z\n")
-            subprocess.run(["bash",str(REPO/"scripts/validate-output.sh"),"research"],capture_output=True,text=True,cwd=str(REPO))
+            subprocess.run(["bash",str(validate_output_script()),"research"],capture_output=True,text=True,cwd=str(REPO))
             # research validator must NOT have reverted .inbox-watermark
             assert wm.read_text().startswith("2099"), "research validator wrongly reverted out-of-scope file"
         finally:

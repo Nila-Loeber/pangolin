@@ -1,4 +1,4 @@
-"""Pytest configuration for Sandburg test suite."""
+"""Pytest configuration for Pangolin test suite."""
 import pytest
 
 

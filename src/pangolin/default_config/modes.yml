@@ -76,7 +76,7 @@ modes:
     provider: anthropic
     # Opus on subscription = no per-token penalty, and the better reasoning
     # genuinely helps wiki-ingest synthesis + thinking-mode analysis. For
-    # API-key deployments, override to sonnet via SANDBURG_MODELS profile.
+    # API-key deployments, override to sonnet via PANGOLIN_MODELS profile.
     model: claude-opus-4-6
     execution: container
     container_runtime: runsc

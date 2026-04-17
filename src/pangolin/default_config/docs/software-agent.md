@@ -5,7 +5,7 @@ Read this file before you begin.
 ## Job
 
 Process one `mode:software` ticket: write code, run tests, commit changes.
-The host-side orchestrator (`scripts/sandburg/software.py`) manages the
+The host-side orchestrator (`pangolin software`) manages the
 branch and PR — you do the coding work.
 
 ## Input

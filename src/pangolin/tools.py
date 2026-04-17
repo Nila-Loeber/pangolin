@@ -1,5 +1,5 @@
 """
-Tool implementations for Sandburg agents. Each tool is a simple Python
+Tool implementations for Pangolin agents. Each tool is a simple Python
 function that replaces a Claude Code CLI built-in. Fully auditable, testable,
 deterministic.
 
@@ -21,7 +21,7 @@ from typing import Any
 from .providers import ToolResult
 
 
-CONTAINER_IMAGE = "sandburg-agent"
+CONTAINER_IMAGE = "pangolin-agent"
 
 
 # Map modes.yml tool identifiers to Claude Code CLI tool names.

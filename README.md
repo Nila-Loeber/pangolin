@@ -1,10 +1,31 @@
-# Pangolin
+<p align="center">
+  <img src="pangolin.svg" alt="Pangolin" width="180"/>
+</p>
 
-Owner-triggered conversational cycles for wiki repositories. Drops an
-autonomous research/thinking/writing loop into any Git repo, sandboxed by
-gVisor + explicit bind-mounts.
+<h1 align="center">Pangolin</h1>
+
+<p align="center"><em>Your wiki's slow, secure, autonomous co-author.</em></p>
+
+---
+
+Pangolin drops an owner-triggered conversational loop into any Git repo —
+research, ingest, think, write, self-improve, open PR, repeat. A production
+implementation of Karpathy's LLM-wiki pattern, hardened for real use.
 
 **Status: alpha.** API surface and defaults may change.
+
+## Why Pangolin
+
+- **Async by design.** No chat UI, no notifications, no "are you there?".
+  Cycles run on dispatch or on a cron you control. You read the PRs when
+  you're ready. Mental-health-friendly by construction.
+- **Owner-triggered only.** No inbound webhooks, no public endpoints.
+  Nothing runs unless you click dispatch or the schedule fires.
+- **Secure by default.** Every agent call runs in a per-agent gVisor
+  sandbox with an explicit filesystem mount set and blocked egress
+  outside a pinned allowlist. No plugin registry, no tool marketplace.
+- **Wiki, not chat.** Output is committed content in your repo — fragments,
+  pages, drafts — reviewed via normal PRs. Git is the memory.
 
 ## Quick start
 
@@ -49,10 +70,10 @@ pangolin version     # print installed version
 
 ## Security model
 
-See [THREAT_MODEL.md](https://github.com/Nila-Loeber/pangolin/blob/main/docs/THREAT_MODEL.md).
+See [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 
-TL;DR: trust gVisor + GitHub for everything except the research summarization
-step, where you additionally trust Anthropic's CLI to honor `--allowedTools ""`.
+TL;DR: trust gVisor + GitHub for everything, plus Anthropic's CLI to honor
+`--allowedTools ""` during the research summarization step.
 
 ## Upgrading
 
@@ -73,4 +94,4 @@ pangolin init --force  # overwrite (destructive — review diffs first)
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).

@@ -1,4 +1,4 @@
-# Minimal agent image for Sandburg.
+# Minimal agent image for Pangolin.
 #
 # Provides filesystem isolation for tool execution. The LLM API call
 # happens on the host — the container only runs tool implementations

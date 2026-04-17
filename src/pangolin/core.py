@@ -1,4 +1,4 @@
-"""Shared helpers used by multiple sandburg entry points.
+"""Shared helpers used by multiple pangolin entry points.
 
 Nothing in this module depends on provider/tool machinery — just pure utility
 code that both the cycle orchestrator and the software-task runner need.
@@ -26,7 +26,7 @@ REPO = _repo_root()
 # GitHub issues. Used by downstream pre-filters to recognise bot-origin
 # activity (PAT-based `gh issue comment` shows the Owner as author, defeating
 # the standard "[bot]" login check — we need a content marker instead).
-AGENT_MARKER = "<!-- sandburg:auto -->"
+AGENT_MARKER = "<!-- pangolin:auto -->"
 
 
 def wrap_agent_body(body: str) -> str:
