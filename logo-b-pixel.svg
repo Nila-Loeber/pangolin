@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" shape-rendering="crispEdges" role="img" aria-label="Sandburg logo (pixel)">
+  <!-- Flag pole -->
+  <rect x="15" y="2" width="1" height="5" fill="#2d2a26"/>
+  <!-- Flag -->
+  <rect x="16" y="3" width="4" height="1" fill="#c1440e"/>
+  <rect x="16" y="4" width="3" height="1" fill="#c1440e"/>
+  <rect x="16" y="5" width="2" height="1" fill="#c1440e"/>
+
+  <!-- Sand color base everywhere -->
+  <g fill="#d4a373">
+    <!-- Center tower body -->
+    <rect x="13" y="7" width="6" height="14"/>
+    <!-- Left tower body -->
+    <rect x="2" y="11" width="8" height="10"/>
+    <!-- Right tower body -->
+    <rect x="22" y="11" width="8" height="10"/>
+    <!-- Ground base -->
+    <rect x="0" y="21" width="32" height="7"/>
+
+    <!-- Center tower crenellations -->
+    <rect x="13" y="6" width="2" height="1"/>
+    <rect x="17" y="6" width="2" height="1"/>
+    <!-- Left tower crenellations -->
+    <rect x="2" y="10" width="2" height="1"/>
+    <rect x="6" y="10" width="2" height="1"/>
+    <!-- Right tower crenellations -->
+    <rect x="22" y="10" width="2" height="1"/>
+    <rect x="26" y="10" width="2" height="1"/>
+  </g>
+
+  <!-- Darker sand stripes (pixel-style shading) -->
+  <g fill="#a67c52">
+    <rect x="18" y="7" width="1" height="14"/>
+    <rect x="9" y="11" width="1" height="10"/>
+    <rect x="29" y="11" width="1" height="10"/>
+    <rect x="0" y="27" width="32" height="1"/>
+  </g>
+
+  <!-- Door -->
+  <rect x="14" y="16" width="4" height="5" fill="#5a3a22"/>
+  <rect x="15" y="15" width="2" height="1" fill="#5a3a22"/>
+
+  <!-- Sand dots on ground (texture) -->
+  <g fill="#a67c52">
+    <rect x="3" y="24" width="1" height="1"/>
+    <rect x="11" y="25" width="1" height="1"/>
+    <rect x="20" y="24" width="1" height="1"/>
+    <rect x="27" y="25" width="1" height="1"/>
+  </g>
+
+  <!-- Windows (single dark pixels) -->
+  <rect x="4" y="14" width="1" height="1" fill="#5a3a22"/>
+  <rect x="25" y="14" width="1" height="1" fill="#5a3a22"/>
+  <rect x="15" y="10" width="1" height="1" fill="#5a3a22"/>
+</svg>

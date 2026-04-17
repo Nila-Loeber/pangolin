@@ -1,12 +1,12 @@
-# Sandburg Package Extraction — Plan
+# Pangolin Package Extraction — Plan
 
 ## Ziel
 
-`sandburg` als pip-installierbares Paket aus einem eigenen Git-Repo, das in
+`pangolin` als pip-installierbares Paket aus einem eigenen Git-Repo, das in
 beliebige Wiki-Repos eingebunden werden kann via:
 
 ```
-pip install git+https://github.com/Nila-Loeber/sandburg.git@v0.1
+pip install git+https://github.com/Nila-Loeber/pangolin.git@v0.1
 ```
 
 Wiki-Repos bekommen damit: Orchestrator + Default-Config + Workflow-Templates.
@@ -16,23 +16,23 @@ Updates ziehen sie über neue Git-Tags.
 
 | Repo | Inhalt |
 |---|---|
-| **`Nila-Loeber/sandburg`** (neu) | Orchestrator-Code, Containerfiles, GHCR-Image-Builds, Default-Config, Agent-SSoT-Prompts |
-| **`Nila-Loeber/secure-conversational`** (dieses Repo) | Wird zum Dogfood-Wiki — nutzt sandburg als Dependency. Behält seinen Content, verliert den Python-Code. |
-| **Dein echtes Wiki-Repo** | Neu aufzusetzen, nutzt sandburg als Dependency. |
+| **`Nila-Loeber/pangolin`** (neu) | Orchestrator-Code, Containerfiles, GHCR-Image-Builds, Default-Config, Agent-SSoT-Prompts |
+| **`Nila-Loeber/secure-conversational`** (dieses Repo) | Wird zum Dogfood-Wiki — nutzt pangolin als Dependency. Behält seinen Content, verliert den Python-Code. |
+| **Dein echtes Wiki-Repo** | Neu aufzusetzen, nutzt pangolin als Dependency. |
 
-## Ziel-Struktur `sandburg/` Repo
+## Ziel-Struktur `pangolin/` Repo
 
 ```
-sandburg/
+pangolin/
 ├── pyproject.toml
 ├── README.md
 ├── LICENSE
-├── Containerfile                    # sandburg-agent (in-process SDK path)
-├── Containerfile.agent              # sandburg-agent-epic8 (Claude CLI in gVisor)
+├── Containerfile                    # pangolin-agent (in-process SDK path)
+├── Containerfile.agent              # pangolin-agent-epic8 (Claude CLI in gVisor)
 ├── src/
-│   └── sandburg/
+│   └── pangolin/
 │       ├── __init__.py              # exports + __version__
-│       ├── cli.py                   # `sandburg init/run/software/version`
+│       ├── cli.py                   # `pangolin init/run/software/version`
 │       ├── core.py                  # REPO, gh, make_logger, wrap_agent_body
 │       ├── modes.py                 # SCHEMAS, Mode, load_modes
 │       ├── orchestrate.py           # CycleRunner + run_cycle entry
@@ -40,7 +40,7 @@ sandburg/
 │       ├── software.py              # Software-task runner
 │       ├── tools.py                 # ToolExecutor + CLI_TOOL_NAMES
 │       ├── paths.py                 # Package-data resolvers
-│       ├── scaffold.py              # `sandburg init` implementation
+│       ├── scaffold.py              # `pangolin init` implementation
 │       └── default_config/          # Files copied to wiki repo on init
 │           ├── modes.yml
 │           ├── wiki_schema.md
@@ -58,7 +58,7 @@ sandburg/
 │               ├── agent-cycle.yml
 │               └── agent-software.yml
 ├── .github/workflows/
-│   ├── build-agent-images.yml       # baut + pushed sandburg-agent* nach GHCR
+│   ├── build-agent-images.yml       # baut + pushed pangolin-agent* nach GHCR
 │   ├── test.yml                     # pytest on PRs
 │   └── release.yml                  # git tag → PyPI + GHCR-Tag gleichzeitig
 └── tests/
@@ -69,14 +69,14 @@ sandburg/
 ## CLI Interface
 
 ```
-sandburg init                 # scaffoldet Config-Files ins aktuelle Repo
-sandburg run                  # führt einen Cycle aus
-sandburg software             # führt einen Software-Task aus
-sandburg version              # version printen
-sandburg --help
+pangolin init                 # scaffoldet Config-Files ins aktuelle Repo
+pangolin run                  # führt einen Cycle aus
+pangolin software             # führt einen Software-Task aus
+pangolin version              # version printen
+pangolin --help
 ```
 
-### `sandburg init` Verhalten
+### `pangolin init` Verhalten
 
 - Copy `default_config/modes.yml` → `./modes.yml` (skip if exists)
 - Copy `default_config/wiki_schema.md` → `./wiki/SCHEMA.md`
@@ -86,12 +86,12 @@ sandburg --help
 - Create `.ingest-watermark` mit `1970-01-01T00:00:00Z`
 - Print next steps (Secrets setzen, erster Dispatch)
 
-## Wiki-Repo Struktur nach `sandburg init`
+## Wiki-Repo Struktur nach `pangolin init`
 
 ```
 wiki-repo/
 ├── .github/workflows/
-│   ├── agent-cycle.yml              # vom Template — referenziert sandburg via pip
+│   ├── agent-cycle.yml              # vom Template — referenziert pangolin via pip
 │   └── agent-software.yml
 ├── docs/
 │   ├── inbox-triage.md              # SSoT-Prompts, editierbar für Anpassung
@@ -154,13 +154,13 @@ jobs:
       - name: Pull agent images from GHCR
         run: |
           docker login ghcr.io -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }}
-          docker pull ghcr.io/nila-loeber/sandburg-agent:v1
-          docker pull ghcr.io/nila-loeber/sandburg-agent-epic8:v1
-          docker tag ghcr.io/nila-loeber/sandburg-agent:v1 sandburg-agent:latest
-          docker tag ghcr.io/nila-loeber/sandburg-agent-epic8:v1 sandburg-agent-epic8:latest
+          docker pull ghcr.io/nila-loeber/pangolin-agent:v1
+          docker pull ghcr.io/nila-loeber/pangolin-agent-epic8:v1
+          docker tag ghcr.io/nila-loeber/pangolin-agent:v1 pangolin-agent:latest
+          docker tag ghcr.io/nila-loeber/pangolin-agent-epic8:v1 pangolin-agent-epic8:latest
 
-      - name: Install sandburg
-        run: pip install git+https://github.com/Nila-Loeber/sandburg.git@v0.1
+      - name: Install pangolin
+        run: pip install git+https://github.com/Nila-Loeber/pangolin.git@v0.1
 
       - name: Setup git identity
         run: |
@@ -172,7 +172,7 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: sandburg run
+        run: pangolin run
 ```
 
 ## Design-Entscheidungen
@@ -187,34 +187,34 @@ installierten Paket.
 Instruktionen). Wenn wir die Prompts im Paket hielten, würden Updates
 User-Änderungen überschreiben.
 
-**Konsequenz:** Wenn sandburg die Default-Prompts verbessert, müssen User
+**Konsequenz:** Wenn pangolin die Default-Prompts verbessert, müssen User
 manuell mergen. Akzeptabel — Prompts sind Content, nicht Code.
 
 ### 2. Container-Images kommen von GHCR
 
-Der sandburg-Repo hat `.github/workflows/build-agent-images.yml`, der bei jedem
-Tag die Images neu baut und nach `ghcr.io/nila-loeber/sandburg-agent*:vX` pusht.
+Der pangolin-Repo hat `.github/workflows/build-agent-images.yml`, der bei jedem
+Tag die Images neu baut und nach `ghcr.io/nila-loeber/pangolin-agent*:vX` pusht.
 
 Wiki-Repos pullen diese Images, bauen nichts selbst.
 
-**Vorteil:** Supply-Chain-Punkt ist im sandburg-Repo zentralisiert. Wiki-Repos
+**Vorteil:** Supply-Chain-Punkt ist im pangolin-Repo zentralisiert. Wiki-Repos
 brauchen kein npm/Alpine-Mirror im `harden-runner`.
 
 ### 3. `validate_output.sh` lebt im Paket
 
-Das Shell-Script wird beim Orchestrator-Lauf via `sandburg.paths.validate_output_script()`
+Das Shell-Script wird beim Orchestrator-Lauf via `pangolin.paths.validate_output_script()`
 aufgelöst und mit Full-Path aufgerufen. Kein Kopieren ins Wiki-Repo — ein
 Ding weniger, das der User maintainen muss.
 
 ### 4. Workflow-Files werden kopiert (nicht als reusable workflow)
 
-`sandburg init` kopiert `agent-cycle.yml` und `agent-software.yml` ins
+`pangolin init` kopiert `agent-cycle.yml` und `agent-software.yml` ins
 `.github/workflows/` des Wiki-Repos. Vorteil: User sieht + versteht +
-modifiziert den Workflow. Nachteil: Bei sandburg-Updates muss der User
+modifiziert den Workflow. Nachteil: Bei pangolin-Updates muss der User
 ggf. manuell den Workflow updaten.
 
-**Alternative für später:** Reusable-Workflow aus dem sandburg-Repo via
-`uses: Nila-Loeber/sandburg/.github/workflows/cycle.yml@v1`. Verschiebe auf
+**Alternative für später:** Reusable-Workflow aus dem pangolin-Repo via
+`uses: Nila-Loeber/pangolin/.github/workflows/cycle.yml@v1`. Verschiebe auf
 v0.2 wenn das Basis-Pattern steht.
 
 ### 5. Kein PyPI initially
@@ -226,20 +226,20 @@ kommt wenn das Package stabil ist.
 
 Nach Extraktion wird das aktuelle Repo das Dogfood-Wiki:
 
-1. `scripts/sandburg/` rauswerfen
+1. `scripts/pangolin/` rauswerfen
 2. `Containerfile*` rauswerfen
 3. `scripts/{validate-output,audit-tcb,smoke-test,setup-vm}.sh` rauswerfen
-4. `tests/` rauswerfen (gehört zu sandburg)
+4. `tests/` rauswerfen (gehört zu pangolin)
 5. `.github/workflows/agent-cycle.yml` durch Template ersetzen
 6. `.github/workflows/agent-software.yml` durch Template ersetzen
-7. `.github/workflows/build-agent-images.yml` raus (gehört zu sandburg)
-8. `.github/workflows/validate-modes.yml` raus (gehört zu sandburg-Tests)
+7. `.github/workflows/build-agent-images.yml` raus (gehört zu pangolin)
+8. `.github/workflows/validate-modes.yml` raus (gehört zu pangolin-Tests)
 9. `BACKLOG.md`, `PROGRESS.md`, `THREAT_MODEL.md`, `docs/security-target.md`
-   entweder zu sandburg migrieren oder als Wiki-Content belassen
+   entweder zu pangolin migrieren oder als Wiki-Content belassen
 10. Content-only bleiben: `wiki/`, `notes/`, `drafts/`, `content/`, `docs/`,
     `modes.yml`, `.ingest-watermark`
 
-Was übrig bleibt: ein schlankes Content-Repo das sandburg als Dependency hat.
+Was übrig bleibt: ein schlankes Content-Repo das pangolin als Dependency hat.
 
 ## Reihenfolge der Arbeit
 
@@ -251,7 +251,7 @@ Was übrig bleibt: ein schlankes Content-Repo das sandburg als Dependency hat.
 
 ## Offene Fragen
 
-- **Namespace-Konflikt**: Current layout ist `scripts/sandburg/` (Python Module innerhalb eines scripts-Verzeichnisses). Neue Struktur ist `src/sandburg/` (src-Layout für Packages). Import-Statements bleiben gleich (`from sandburg.modes import ...`). ✓
+- **Namespace-Konflikt**: Current layout ist `scripts/pangolin/` (Python Module innerhalb eines scripts-Verzeichnisses). Neue Struktur ist `src/pangolin/` (src-Layout für Packages). Import-Statements bleiben gleich (`from pangolin.modes import ...`). ✓
 - **Version-Tag-Schema**: `v0.1`, `v0.2` (major.minor, keine semver-Patches) oder echtes semver `v0.1.0`? Empfehlung: semver ab Start.
 - **Default-modes.yml**: Momentan hat modes.yml deinen konkreten Workflow-Zuschnitt (7 Modes). Soll das Default bleiben, oder gibt's einen reduzierten "minimal" Default für kleinere Wikis? Für v0.1: der aktuelle 7-Mode-Default, User kann modes.yml bearbeiten.
 - **secure-conversational Dogfooding-Phase**: Dieses Repo hat ~20 existierende Issues, eine PR-History, Workflow-Logs. Beim Umstellen verlieren wir nichts, aber die History-Semantik ändert sich (vorher: "kleines Forschungs-Repo", nachher: "Demo-Wiki"). Keine Aktion nötig.

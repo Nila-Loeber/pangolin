@@ -3,7 +3,7 @@ requires = ["setuptools>=64", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "sandburg"
+name = "pangolin"
 description = "Owner-triggered conversational cycles for wiki repos"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -30,17 +30,17 @@ dev = [
 ]
 
 [project.scripts]
-sandburg = "sandburg.cli:main"
+pangolin = "pangolin.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/Nila-Loeber/sandburg"
-Issues = "https://github.com/Nila-Loeber/sandburg/issues"
+Homepage = "https://github.com/Nila-Loeber/pangolin"
+Issues = "https://github.com/Nila-Loeber/pangolin/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-sandburg = [
+pangolin = [
     "default_config/*.yml",
     "default_config/*.md",
     "default_config/*.sh",

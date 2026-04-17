@@ -1,0 +1,34 @@
+# Containerfile.agent — Sandburg per-agent runtime (Epic 8 spike)
+#
+# Minimal image hosting the Claude Code CLI under gVisor-level sandboxing.
+# The host orchestrator invokes `claude` via `docker run` per agent call.
+# No Python in the container — just Node + claude-code + the shell.
+#
+# Design:
+#   - Alpine base (pinned by digest)
+#   - Node.js LTS (pinned apk version)
+#   - npm (pinned apk version)
+#   - @anthropic-ai/claude-code (pinned npm version)
+#   - Non-root uid 1000
+#   - Workdir /work — the orchestrator bind-mounts a fresh per-call directory here
+
+FROM alpine@sha256:a4f4213abb84c497377b8544c81b3564f313746700372ec4fe84653e4fb03805
+
+# Pinned package versions. Bump requires updating the digest + versions atomically.
+RUN apk add --no-cache \
+      ca-certificates=20250911-r0 \
+      nodejs=20.15.1-r0 \
+      npm=10.9.1-r0
+
+# Pin Claude Code CLI. Bump by updating the version here AND re-auditing.
+RUN npm install -g --no-audit --no-fund @anthropic-ai/claude-code@2.1.107 \
+    && npm cache clean --force
+
+RUN adduser -D -u 1000 -s /bin/sh agent
+USER agent
+WORKDIR /work
+
+# No ENTRYPOINT — the orchestrator supplies the exact claude invocation
+# per agent call (with --output-format, --append-system-prompt, etc.).
+# Default CMD just confirms the binary is present.
+CMD ["claude", "--version"]

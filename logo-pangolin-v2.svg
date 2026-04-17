@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Pangolin logo">
+  <!-- Soft ground shadow -->
+  <ellipse cx="32" cy="58" rx="24" ry="2" fill="#8b5a2b" opacity="0.25"/>
+
+  <!-- Body: side-view walking pangolin silhouette -->
+  <!-- Main torso -->
+  <path d="M 18 40
+           Q 14 36 14 32
+           Q 14 26 20 24
+           Q 28 22 38 24
+           Q 50 26 54 34
+           Q 56 40 52 44
+           L 48 46
+           L 18 46 Z"
+        fill="#d4a373"/>
+
+  <!-- Long tail, curving down -->
+  <path d="M 52 44
+           Q 58 46 60 50
+           Q 60 54 56 56
+           Q 52 56 50 52
+           Q 50 48 52 44 Z"
+        fill="#d4a373"/>
+
+  <!-- Head + snout on the left -->
+  <path d="M 18 40
+           Q 10 38 8 34
+           Q 6 30 8 28
+           Q 10 26 14 28
+           Q 18 30 20 32 Z"
+        fill="#c89a6b"/>
+  <!-- Snout tip -->
+  <ellipse cx="7" cy="32" rx="2.5" ry="1.5" fill="#a67c52"/>
+  <!-- Eye -->
+  <circle cx="14" cy="31" r="1.1" fill="#2d2a26"/>
+
+  <!-- Front leg -->
+  <rect x="22" y="44" width="4" height="6" rx="1" fill="#c89a6b"/>
+  <!-- Back leg -->
+  <rect x="42" y="44" width="4" height="6" rx="1" fill="#c89a6b"/>
+
+  <!-- Scales on the back — triangular/pointed, overlapping, in rows -->
+  <!-- Shadow layer (darker) behind scales -->
+  <g fill="#a67c52">
+    <!-- Row 1 — along back (top curve) -->
+    <path d="M 22 26 L 26 22 L 30 26 Z"/>
+    <path d="M 28 26 L 32 22 L 36 26 Z"/>
+    <path d="M 34 26 L 38 22 L 42 26 Z"/>
+    <path d="M 40 26 L 44 22 L 48 26 Z"/>
+
+    <!-- Row 2 — slightly lower, offset -->
+    <path d="M 19 32 L 23 28 L 27 32 Z"/>
+    <path d="M 25 32 L 29 28 L 33 32 Z"/>
+    <path d="M 31 32 L 35 28 L 39 32 Z"/>
+    <path d="M 37 32 L 41 28 L 45 32 Z"/>
+    <path d="M 43 32 L 47 28 L 51 32 Z"/>
+
+    <!-- Row 3 — side/lower -->
+    <path d="M 20 38 L 24 34 L 28 38 Z"/>
+    <path d="M 26 38 L 30 34 L 34 38 Z"/>
+    <path d="M 32 38 L 36 34 L 40 38 Z"/>
+    <path d="M 38 38 L 42 34 L 46 38 Z"/>
+    <path d="M 44 38 L 48 34 L 52 38 Z"/>
+
+    <!-- Tail scales -->
+    <path d="M 51 46 L 54 43 L 57 47 Z"/>
+    <path d="M 54 50 L 57 47 L 59 51 Z"/>
+  </g>
+
+  <!-- Highlight layer on top of each scale (lighter, giving depth) -->
+  <g fill="#e8c595" opacity="0.6">
+    <path d="M 25 25 L 27 23 L 28 25 Z"/>
+    <path d="M 31 25 L 33 23 L 34 25 Z"/>
+    <path d="M 37 25 L 39 23 L 40 25 Z"/>
+    <path d="M 43 25 L 45 23 L 46 25 Z"/>
+
+    <path d="M 22 31 L 24 29 L 25 31 Z"/>
+    <path d="M 28 31 L 30 29 L 31 31 Z"/>
+    <path d="M 34 31 L 36 29 L 37 31 Z"/>
+    <path d="M 40 31 L 42 29 L 43 31 Z"/>
+    <path d="M 46 31 L 48 29 L 49 31 Z"/>
+  </g>
+</svg>

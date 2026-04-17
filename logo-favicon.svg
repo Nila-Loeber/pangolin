@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Sandburg logo">
+  <!-- Flag pole -->
+  <rect x="31.25" y="6" width="1" height="12" fill="#2d2a26"/>
+  <!-- Flag (triangular pennant) -->
+  <path d="M 32.25 7 L 40 10 L 32.25 13 Z" fill="#c1440e"/>
+
+  <g fill="#d4a373">
+    <!-- Base (continuous ground-row of the castle) -->
+    <rect x="5" y="42" width="54" height="14"/>
+    <!-- Left tower -->
+    <rect x="5" y="30" width="14" height="12"/>
+    <!-- Right tower -->
+    <rect x="45" y="30" width="14" height="12"/>
+    <!-- Center tower (tallest) -->
+    <rect x="24" y="18" width="16" height="24"/>
+
+    <!-- Crenellations — center tower -->
+    <rect x="24" y="14" width="3" height="4"/>
+    <rect x="30" y="14" width="4" height="4"/>
+    <rect x="37" y="14" width="3" height="4"/>
+
+    <!-- Crenellations — left tower -->
+    <rect x="5" y="26" width="3" height="4"/>
+    <rect x="10.5" y="26" width="3" height="4"/>
+    <rect x="16" y="26" width="3" height="4"/>
+
+    <!-- Crenellations — right tower -->
+    <rect x="45" y="26" width="3" height="4"/>
+    <rect x="50.5" y="26" width="3" height="4"/>
+    <rect x="56" y="26" width="3" height="4"/>
+  </g>
+
+  <!-- Shadow column (depth) on right side of each tower -->
+  <g fill="#a67c52" opacity="0.5">
+    <rect x="37" y="18" width="3" height="24"/>
+    <rect x="16" y="30" width="3" height="12"/>
+    <rect x="56" y="30" width="3" height="12"/>
+    <rect x="5" y="54" width="54" height="2"/>
+  </g>
+
+  <!-- Arched door -->
+  <path d="M 28 56 L 28 44 Q 28 40 32 40 Q 36 40 36 44 L 36 56 Z" fill="#5a3a22"/>
+
+  <!-- Small windows (round, darker) -->
+  <circle cx="12" cy="36" r="1.6" fill="#5a3a22"/>
+  <circle cx="52" cy="36" r="1.6" fill="#5a3a22"/>
+  <circle cx="32" cy="24" r="1.6" fill="#5a3a22"/>
+
+  <!-- Ground line -->
+  <rect x="2" y="57" width="60" height="1.5" fill="#8b5a2b" opacity="0.6"/>
+</svg>

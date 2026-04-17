@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Pangolin logo">
+  <!-- Body (curled-up silhouette, defensive posture) -->
+  <path d="M 32 10
+           C 48 10, 58 24, 58 38
+           C 58 48, 50 56, 38 56
+           C 34 56, 30 55, 26 54
+           C 18 52, 12 46, 10 38
+           C 10 22, 20 10, 32 10 Z"
+        fill="#d4a373"/>
+
+  <!-- Head peeking out (bottom-left), tucked in -->
+  <ellipse cx="18" cy="50" rx="7" ry="5" fill="#c89a6b"/>
+  <!-- Snout -->
+  <ellipse cx="12" cy="52" rx="3" ry="2" fill="#b8875a"/>
+  <!-- Eye -->
+  <circle cx="19" cy="48" r="1.2" fill="#2d2a26"/>
+
+  <!-- Overlapping scales on the back — five rows, geometric chevrons -->
+  <g fill="#b8875a" stroke="#a67c52" stroke-width="0.4">
+    <!-- Row 1 (outermost, top of shell) -->
+    <path d="M 22 14 Q 26 11 30 14 L 30 17 L 22 17 Z"/>
+    <path d="M 30 13 Q 34 10 38 13 L 38 16 L 30 16 Z"/>
+    <path d="M 38 13 Q 42 10 46 13 L 46 16 L 38 16 Z"/>
+
+    <!-- Row 2 -->
+    <path d="M 18 19 Q 22 16 26 19 L 26 22 L 18 22 Z"/>
+    <path d="M 26 19 Q 30 16 34 19 L 34 22 L 26 22 Z"/>
+    <path d="M 34 19 Q 38 16 42 19 L 42 22 L 34 22 Z"/>
+    <path d="M 42 19 Q 46 16 50 19 L 50 22 L 42 22 Z"/>
+
+    <!-- Row 3 -->
+    <path d="M 15 25 Q 19 22 23 25 L 23 28 L 15 28 Z"/>
+    <path d="M 23 25 Q 27 22 31 25 L 31 28 L 23 28 Z"/>
+    <path d="M 31 25 Q 35 22 39 25 L 39 28 L 31 28 Z"/>
+    <path d="M 39 25 Q 43 22 47 25 L 47 28 L 39 28 Z"/>
+    <path d="M 47 25 Q 51 22 55 25 L 55 28 L 47 28 Z"/>
+
+    <!-- Row 4 -->
+    <path d="M 14 31 Q 18 28 22 31 L 22 34 L 14 34 Z"/>
+    <path d="M 22 31 Q 26 28 30 31 L 30 34 L 22 34 Z"/>
+    <path d="M 30 31 Q 34 28 38 31 L 38 34 L 30 34 Z"/>
+    <path d="M 38 31 Q 42 28 46 31 L 46 34 L 38 34 Z"/>
+    <path d="M 46 31 Q 50 28 54 31 L 54 34 L 46 34 Z"/>
+
+    <!-- Row 5 -->
+    <path d="M 14 37 Q 18 34 22 37 L 22 40 L 14 40 Z"/>
+    <path d="M 22 37 Q 26 34 30 37 L 30 40 L 22 40 Z"/>
+    <path d="M 30 37 Q 34 34 38 37 L 38 40 L 30 40 Z"/>
+    <path d="M 38 37 Q 42 34 46 37 L 46 40 L 38 40 Z"/>
+    <path d="M 46 37 Q 50 34 54 37 L 54 40 L 46 40 Z"/>
+
+    <!-- Row 6 (bottom of shell, tighter curve) -->
+    <path d="M 26 43 Q 30 40 34 43 L 34 46 L 26 46 Z"/>
+    <path d="M 34 43 Q 38 40 42 43 L 42 46 L 34 46 Z"/>
+    <path d="M 42 43 Q 46 40 50 43 L 50 46 L 42 46 Z"/>
+
+    <!-- Row 7 -->
+    <path d="M 38 49 Q 42 46 46 49 L 46 52 L 38 52 Z"/>
+  </g>
+
+  <!-- Tail tip curling around the bottom -->
+  <path d="M 45 54 Q 40 58 32 56 Q 36 54 40 53 Q 44 52 45 54 Z" fill="#c89a6b"/>
+
+  <!-- Ground shadow -->
+  <ellipse cx="32" cy="60" rx="22" ry="1.5" fill="#8b5a2b" opacity="0.3"/>
+</svg>

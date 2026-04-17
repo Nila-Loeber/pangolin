@@ -1,0 +1,156 @@
+# Mode definitions for Secure Conversational LLM Workflows.
+#
+# Each Mode is a named permission profile. tools.py enforces
+# allowed_tools + readable/writable_paths. modes.py validates invariants.
+#
+# Invariants (modes.py _validate_invariants):
+#   - trust_level: untrusted implies code_execution: false
+#   - trust_level: untrusted implies quarantine_output is set
+#   - readable_paths and writable_paths must be non-empty
+#   - writable_paths must be a subset of readable_paths (a writable path is
+#     implicitly readable)
+#
+# Field reference:
+#   description:       free text, purpose of the Mode
+#   network:           bool — container network access
+#   code_execution:    bool — may the agent run arbitrary code
+#   allowed_tools:     list — tool categories the agent may use (soft)
+#   denied_tools:      list — tool categories the agent must not use (soft)
+#   readable_paths:    list — dirs/globs the agent can read (hard, mounts)
+#   writable_paths:    list — dirs/globs the agent can write (hard, mounts)
+#   gh_cli:            bool — whether a GitHub token is mounted
+#   autonomy:          low|medium|high — documentation, not enforced
+#   trust_level:       trusted|untrusted — does this Mode process untrusted input?
+#   quarantine_output: path — required when trust_level is untrusted
+#   provider:          anthropic|scaleway — which LLM provider to use
+#   model:             model identifier for the provider
+#   execution:         container|direct — container for tool-calling agents,
+#                      direct for json-schema agents (no container needed)
+#   container_runtime: runsc — gVisor runtime for container Modes. Provides
+#                      userspace syscall interception (subsumes seccomp-bpf)
+
+modes:
+
+  software:
+    description: "Write code, run tests, tooling, scripts — workflow manages git/gh"
+    provider: anthropic
+    model: claude-opus-4-6
+    execution: container
+    container_runtime: runsc
+    network: false
+    code_execution: true
+    allowed_tools: [read, write, edit, glob, bash]
+    denied_tools: [web_search, web_fetch]
+    readable_paths: [src/, tests/, scripts/, docs/]
+    writable_paths: [src/, tests/, scripts/]
+    gh_cli: false
+    autonomy: medium
+    trust_level: trusted
+
+  research:
+    description: "Phase-2 summariser: receives search results (untrusted), returns structured findings JSON"
+    provider: anthropic
+    model: claude-sonnet-4-6
+    execution: direct
+    network: false
+    code_execution: false
+    # Epic 9 phase-split: research is now two phases.
+    # Phase 1 ("search"): in-process SDK + WebSearch server tool, trusted input
+    #   (owner's issue body). Runs on the host, not in a container. Hardcoded
+    #   in orchestrate.py::_run_search_phase(), no mode entry needed.
+    # Phase 2 ("summarise"): this mode. Direct agent, json-schema, no tools.
+    #   Receives search results (untrusted web content) and produces structured
+    #   findings. Token stays on host. Trifecta broken: (b)+(c) missing.
+    allowed_tools: []
+    denied_tools: [read, write, edit, glob, grep, bash, web_search, web_fetch]
+    readable_paths: [wiki/, notes/]
+    writable_paths: []
+    gh_cli: false
+    autonomy: high
+    trust_level: untrusted
+    quarantine_output: wiki/fragment/
+    json_schema: research
+
+  thinking:
+    description: "Analysis, synthesis, structuring, cross-links — also wiki-ingest"
+    provider: anthropic
+    # Opus on subscription = no per-token penalty, and the better reasoning
+    # genuinely helps wiki-ingest synthesis + thinking-mode analysis. For
+    # API-key deployments, override to sonnet via SANDBURG_MODELS profile.
+    model: claude-opus-4-6
+    execution: container
+    container_runtime: runsc
+    network: false
+    code_execution: false
+    allowed_tools: [read, write, edit, glob]
+    denied_tools: [grep, bash]
+    readable_paths: [wiki/, notes/, drafts/, .ingest-watermark]
+    writable_paths: [wiki/, notes/, drafts/, .ingest-watermark]
+    gh_cli: false
+    autonomy: low
+    trust_level: trusted
+
+  writing:
+    description: "Produce prose, iterate drafts"
+    provider: anthropic
+    # Opus for prose quality (ok on subscription, override to sonnet for API-key).
+    model: claude-opus-4-6
+    execution: container
+    container_runtime: runsc
+    network: false
+    code_execution: false
+    allowed_tools: [read, write, edit, glob]
+    denied_tools: [grep, bash]
+    readable_paths: [drafts/, content/, wiki/, notes/]
+    writable_paths: [drafts/, content/]
+    gh_cli: false
+    autonomy: medium
+    trust_level: trusted
+
+  triage:
+    description: "Inbox triage: json-schema output, the executor makes the gh calls"
+    provider: anthropic
+    model: claude-sonnet-4-6
+    execution: direct
+    network: false
+    code_execution: false
+    allowed_tools: []
+    denied_tools: [read, write, edit, glob, grep, bash]
+    readable_paths: [wiki/, notes/, .inbox-watermark]
+    writable_paths: [notes/ideas/, .inbox-watermark]
+    gh_cli: false
+    autonomy: medium
+    trust_level: trusted
+    json_schema: triage
+
+  summary:
+    description: "Cycle summary: json-schema output, the executor posts comments"
+    provider: anthropic
+    model: claude-haiku-4-5-20251001
+    execution: direct
+    network: false
+    code_execution: false
+    allowed_tools: []
+    denied_tools: [read, write, edit, glob, grep, bash]
+    readable_paths: [wiki/, notes/, drafts/]
+    writable_paths: [notes/ideas/]
+    gh_cli: false
+    autonomy: low
+    trust_level: trusted
+    json_schema: summary
+
+  self-improve:
+    description: "Self-reflection: json-schema output, the workflow writes the edited files"
+    provider: anthropic
+    model: claude-sonnet-4-6
+    execution: direct
+    network: false
+    code_execution: false
+    allowed_tools: []
+    denied_tools: [read, write, edit, glob, grep, bash]
+    readable_paths: [docs/]
+    writable_paths: [docs/]
+    gh_cli: false
+    autonomy: low
+    trust_level: trusted
+    json_schema: self-improve
