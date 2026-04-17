@@ -154,14 +154,14 @@ def load_modes(path: Path) -> dict[str, Mode]:
 
     Two override mechanisms (per-mode wins over global if both set):
 
-    1. `SANDBURG_MODELS=path/to/models.yml`: load per-mode (provider, model)
+    1. `PANGOLIN_MODELS=path/to/models.yml`: load per-mode (provider, model)
        overrides from a YAML file. Modes not listed keep modes.yml defaults.
        Useful for switching between cost/quality profiles (e.g.
        `models.test.yml` puts cheap-but-OK modes on Haiku for E2E flow
        testing while keeping triage/self-improve on Sonnet for reasoning).
        Forward-compatible with non-Anthropic providers (e.g. Scaleway).
 
-    2. `SANDBURG_MODEL_OVERRIDE=<model-id>`: legacy global override —
+    2. `PANGOLIN_MODEL_OVERRIDE=<model-id>`: legacy global override —
        replaces every mode's model with the same value. Coarser; kept
        for the simplest "just throw Haiku at everything" path.
     """
@@ -170,7 +170,7 @@ def load_modes(path: Path) -> dict[str, Mode]:
 
     # Load per-mode overrides (option 1)
     overrides: dict[str, dict] = {}
-    cfg_path = os.environ.get("SANDBURG_MODELS")
+    cfg_path = os.environ.get("PANGOLIN_MODELS")
     if cfg_path:
         cfg_p = Path(cfg_path)
         if not cfg_p.is_absolute():
@@ -180,7 +180,7 @@ def load_modes(path: Path) -> dict[str, Mode]:
             overrides = ovr.get("overrides", {}) or {}
 
     # Legacy global override (option 2)
-    global_override = os.environ.get("SANDBURG_MODEL_OVERRIDE")
+    global_override = os.environ.get("PANGOLIN_MODEL_OVERRIDE")
 
     modes = {}
     for name, cfg in raw["modes"].items():

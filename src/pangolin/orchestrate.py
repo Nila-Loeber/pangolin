@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-Sandburg Orchestrator — cycle agents.
+Pangolin Orchestrator — cycle agents.
 
 Runs the conversational cycle (owner-triggered, 1h cadence):
   precheck → triage → research → wiki-ingest → wiki-index →
   thinking → writing → self-improve → commit+PR → summary
 
 Software-mode tickets are handled by a separate entry point
-(scripts/sandburg/software.py + .github/workflows/agent-software.yml)
+(`pangolin software` + .github/workflows/agent-software.yml)
 because they need their own branch and PR per task.
 
 Usage:
-  python scripts/sandburg/orchestrate.py      # from repo root
+  pangolin run                               # from wiki repo root
 
 Environment:
   CLAUDE_CODE_OAUTH_TOKEN — Max-subscription token; routes every agent call
@@ -34,10 +34,11 @@ from pathlib import Path
 
 from pangolin.core import AGENT_MARKER, REPO, gh, make_logger, wrap_agent_body
 from pangolin.modes import SCHEMAS, Mode, load_modes
+from pangolin.paths import validate_output_script
 from pangolin.providers import ChatResult, create_provider
 from pangolin.tools import CLI_TOOL_NAMES, ToolConfig, ToolExecutor
 
-log = make_logger("sandburg")
+log = make_logger("pangolin")
 
 
 # ── Sentinel watermark (idempotent across unmerged PRs) ──
@@ -284,14 +285,14 @@ def precheck() -> bool:
 # the OS level. The host orchestrator only reads the returned JSON. No
 # Python stack inside the container, no claude-agent-sdk wrapping — just
 # `claude --print --output-format json`.
-AGENT_IMAGE = os.environ.get("SANDBURG_AGENT_IMAGE", "sandburg-agent-epic8")
+AGENT_IMAGE = os.environ.get("PANGOLIN_AGENT_IMAGE", "pangolin-agent-epic8")
 
 
 # Container resource budget for agent runs. Conservative defaults that work
 # for Opus-sized outputs; override via env for experimental runs.
-CONTAINER_MEMORY = os.environ.get("SANDBURG_CONTAINER_MEMORY", "512m")
-CONTAINER_CPUS = os.environ.get("SANDBURG_CONTAINER_CPUS", "1.0")
-CONTAINER_PIDS_LIMIT = os.environ.get("SANDBURG_CONTAINER_PIDS", "128")
+CONTAINER_MEMORY = os.environ.get("PANGOLIN_CONTAINER_MEMORY", "512m")
+CONTAINER_CPUS = os.environ.get("PANGOLIN_CONTAINER_CPUS", "1.0")
+CONTAINER_PIDS_LIMIT = os.environ.get("PANGOLIN_CONTAINER_PIDS", "128")
 TMPFS_TMP_SIZE = "64m"       # /tmp inside the container
 TMPFS_HOME_SIZE = "128m"     # /home/agent — Claude CLI state
 
@@ -1150,7 +1151,7 @@ class CycleRunner:
         # Validator runs once after all per-issue runs; deletes any
         # fragment without proper frontmatter. Inference filter then
         # only keeps claims backed by a surviving fragment.
-        subprocess.run(["bash", str(REPO / "scripts/validate-output.sh"), "research"], cwd=str(REPO))
+        subprocess.run(["bash", str(validate_output_script()), "research"], cwd=str(REPO))
         self.processed_per_mode["research"] = _research_inference_filter(all_processed)
 
     # ── WIKI-INGEST ──
@@ -1191,7 +1192,7 @@ class CycleRunner:
             )
             run_container_agent(mode, legacy_prompt, self.get_provider(mode.provider))
         subprocess.run(
-            ["bash", str(REPO / "scripts/validate-output.sh"), "wiki-ingest"],
+            ["bash", str(validate_output_script()), "wiki-ingest"],
             cwd=str(REPO),
         )
 

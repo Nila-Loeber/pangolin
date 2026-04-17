@@ -3,7 +3,7 @@
 Software task runner. Picks up one mode:software issue, creates a
 feature branch, runs the agent with Bash+tools, commits, opens PR.
 
-Usage: python scripts/sandburg/software.py
+Invoked via the `pangolin software` CLI entry point.
 """
 
 from __future__ import annotations

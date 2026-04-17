@@ -1,4 +1,4 @@
-# Containerfile.agent — Sandburg per-agent runtime (Epic 8 spike)
+# Containerfile.agent — Pangolin per-agent runtime (Epic 8 spike)
 #
 # Minimal image hosting the Claude Code CLI under gVisor-level sandboxing.
 # The host orchestrator invokes `claude` via `docker run` per agent call.
