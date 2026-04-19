@@ -15,9 +15,12 @@ FROM alpine@sha256:a4f4213abb84c497377b8544c81b3564f313746700372ec4fe84653e4fb03
 
 # Pinned package versions — see SFR.SUPPLY.1.
 # Bump requires updating both digest (above) and versions (below) atomically.
+# ca-certificates is deliberately unpinned: it's a trust-root bundle meant to
+# receive CVE updates, and Alpine rotates it out of the repo faster than we
+# can bump pins (see BACKLOG.md "image reproducibility").
 RUN apk add --no-cache \
       bash=5.2.26-r0 \
-      ca-certificates=20260413-r0 \
+      ca-certificates \
       git=2.45.4-r0 \
       grep=3.11-r0 \
       jq=1.7.1-r0 \

@@ -15,8 +15,9 @@
 FROM alpine@sha256:a4f4213abb84c497377b8544c81b3564f313746700372ec4fe84653e4fb03805
 
 # Pinned package versions. Bump requires updating the digest + versions atomically.
+# ca-certificates unpinned — trust-root bundle, see Containerfile for rationale.
 RUN apk add --no-cache \
-      ca-certificates=20260413-r0 \
+      ca-certificates \
       nodejs=20.15.1-r0 \
       npm=10.9.1-r0
 

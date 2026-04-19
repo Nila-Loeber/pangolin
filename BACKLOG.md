@@ -2,6 +2,21 @@
 
 ## Pre-GA
 
+- **Image reproducibility.** Current setup pins apk versions in Containerfiles,
+  but Alpine's apk repos are mutable — they keep only the *current* version per
+  release branch, so pins rot whenever upstream rebuilds for a CVE. We already
+  hit this once (ca-certificates, now unpinned). Two durable fixes:
+  1. Add renovate/dependabot on `Containerfile*` so pin-rot produces a PR
+     within days instead of a broken build at dispatch time.
+  2. Move runtime workflows from `:latest` to immutable image digests
+     (`ghcr.io/.../pangolin-agent@sha256:...`). The build workflow already
+     pushes SHA-tagged images; runtime would pin and bump on a cadence. This
+     decouples runtime reproducibility from apk's mutability entirely.
+  Longer-term option: switch to apko/Wolfi (lockfile-based image builds, no
+  runtime package manager). Bigger change, right answer for GA.
+
+
+
 - **Generalize nlkw's wiki conventions.** The `--with-wiki` init flag currently
   ships nlkw-flavored templates (German-default voice, specific directory
   typology: `ref/`, `project/`, `draft/`, `fragment/`). Before GA:
