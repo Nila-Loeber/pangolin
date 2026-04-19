@@ -17,7 +17,7 @@ FROM alpine@sha256:a4f4213abb84c497377b8544c81b3564f313746700372ec4fe84653e4fb03
 # Bump requires updating both digest (above) and versions (below) atomically.
 RUN apk add --no-cache \
       bash=5.2.26-r0 \
-      ca-certificates=20250911-r0 \
+      ca-certificates=20260413-r0 \
       git=2.45.4-r0 \
       grep=3.11-r0 \
       jq=1.7.1-r0 \
