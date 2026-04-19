@@ -34,7 +34,7 @@ modes:
   software:
     description: "Write code, run tests, tooling, scripts — workflow manages git/gh"
     provider: anthropic
-    model: claude-opus-4-6
+    model: claude-opus-4-7
     execution: container
     container_runtime: runsc
     network: false
@@ -77,7 +77,7 @@ modes:
     # Opus on subscription = no per-token penalty, and the better reasoning
     # genuinely helps wiki-ingest synthesis + thinking-mode analysis. For
     # API-key deployments, override to sonnet via PANGOLIN_MODELS profile.
-    model: claude-opus-4-6
+    model: claude-opus-4-7
     execution: container
     container_runtime: runsc
     network: false
@@ -94,7 +94,7 @@ modes:
     description: "Produce prose, iterate drafts"
     provider: anthropic
     # Opus for prose quality (ok on subscription, override to sonnet for API-key).
-    model: claude-opus-4-6
+    model: claude-opus-4-7
     execution: container
     container_runtime: runsc
     network: false

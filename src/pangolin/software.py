@@ -3,7 +3,7 @@
 Software task runner. Picks up one mode:software issue, creates a
 feature branch, runs the agent with Bash+tools, commits, opens PR.
 
-Invoked via the `pangolin software` CLI entry point.
+Called from `run_cycle()` after the main cycle PR is opened.
 """
 
 from __future__ import annotations

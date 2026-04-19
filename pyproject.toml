@@ -46,6 +46,7 @@ pangolin = [
     "default_config/*.sh",
     "default_config/docs/*.md",
     "default_config/workflows/*.yml",
+    "default_config/wiki/*.md",
 ]
 
 [tool.setuptools_scm]

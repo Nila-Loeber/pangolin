@@ -39,3 +39,7 @@ def default_docs_dir() -> Path:
 
 def default_workflows_dir() -> Path:
     return default_config_root() / "workflows"
+
+
+def default_wiki_dir() -> Path:
+    return default_config_root() / "wiki"

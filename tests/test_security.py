@@ -132,8 +132,8 @@ class TestSfrFlm:
 
 class TestHardening:
     def test_harden_runner(self):
-        for wf in (REPO/".github/workflows/agent-cycle.yml", REPO/".github/workflows/agent-software.yml"):
-            assert "harden-runner" in read(wf)
+        wf = REPO/"src/pangolin/default_config/workflows/agent-cycle.yml"
+        assert "harden-runner" in read(wf)
     @pytest.mark.sfr("FLM.1")
     def test_iteration_limit(self):
         c = read(REPO/"src/pangolin/providers.py")

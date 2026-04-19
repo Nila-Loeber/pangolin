@@ -22,23 +22,23 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Overwrite existing files instead of skipping them.",
     )
+    init_p.add_argument(
+        "--with-wiki",
+        action="store_true",
+        help="Also seed wiki/ with index.md, log.md, and ref/project/draft/ directories.",
+    )
 
-    sub.add_parser("run", help="Run one full conversational cycle.")
-    sub.add_parser("software", help="Run one software-mode task.")
+    sub.add_parser("run", help="Run one full conversational cycle (includes one software task if queued).")
     sub.add_parser("version", help="Print the installed version.")
 
     args = parser.parse_args(argv)
 
     if args.cmd == "init":
         from pangolin.scaffold import init_repo
-        return init_repo(force=args.force)
+        return init_repo(force=args.force, with_wiki=args.with_wiki)
     if args.cmd == "run":
         from pangolin.orchestrate import run_cycle
         run_cycle()
-        return 0
-    if args.cmd == "software":
-        from pangolin.software import run as run_software
-        run_software()
         return 0
     if args.cmd == "version":
         from pangolin import __version__

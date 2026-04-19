@@ -6,9 +6,8 @@ Runs the conversational cycle (owner-triggered, 1h cadence):
   precheck → triage → research → wiki-ingest → wiki-index →
   thinking → writing → self-improve → commit+PR → summary
 
-Software-mode tickets are handled by a separate entry point
-(`pangolin software` + .github/workflows/agent-software.yml)
-because they need their own branch and PR per task.
+After the cycle PR is opened, `run_cycle()` also picks up one
+`mode:software` ticket (if any), which produces its own branch and PR.
 
 Usage:
   pangolin run                               # from wiki repo root
@@ -1450,8 +1449,11 @@ class CycleRunner:
 
 
 def run_cycle() -> None:
-    """Entry point — runs one full cycle via CycleRunner."""
+    """Entry point — runs one full cycle, then one software task if queued."""
     CycleRunner().run()
+    # _commit() already returns us to main. Pick up one software ticket if any.
+    from pangolin import software
+    software.run()
 
 
 if __name__ == "__main__":

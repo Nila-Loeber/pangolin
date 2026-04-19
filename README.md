@@ -54,8 +54,7 @@ Then dispatch `.github/workflows/agent-cycle.yml` from the Actions tab.
 | `wiki/SCHEMA.md` | Wiki structure conventions |
 | `wiki/fragment/` | Quarantine zone for untrusted research output |
 | `docs/*.md` | Agent SSoT prompts (edit to customize voice/domain) |
-| `.github/workflows/agent-cycle.yml` | Scheduled/dispatch-triggered cycle |
-| `.github/workflows/agent-software.yml` | Per-ticket software-task runner |
+| `.github/workflows/agent-cycle.yml` | Scheduled/dispatch-triggered cycle (also processes one software ticket per run) |
 | `.ingest-watermark` | Fragment-processing cursor |
 | `notes/ideas/`, `drafts/`, `content/` | Content areas |
 
@@ -63,8 +62,7 @@ Then dispatch `.github/workflows/agent-cycle.yml` from the Actions tab.
 
 ```
 pangolin init        # scaffold config into current repo
-pangolin run         # execute one cycle
-pangolin software    # execute one software-mode task
+pangolin run         # execute one cycle (+ one software task if queued)
 pangolin version     # print installed version
 ```
 

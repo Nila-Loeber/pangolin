@@ -22,7 +22,9 @@ def _copy(src: Path, dst: Path, *, force: bool) -> str:
     return f"wrote {dst}"
 
 
-def init_repo(*, force: bool = False, cwd: Path | None = None) -> int:
+def init_repo(
+    *, force: bool = False, with_wiki: bool = False, cwd: Path | None = None
+) -> int:
     """Scaffold pangolin config into `cwd` (default: current working directory)."""
     root = (cwd or Path.cwd()).resolve()
     actions: list[str] = []
@@ -46,6 +48,20 @@ def init_repo(*, force: bool = False, cwd: Path | None = None) -> int:
             gk.parent.mkdir(parents=True, exist_ok=True)
             gk.touch()
             actions.append(f"wrote {gk}")
+
+    # --with-wiki: seed nlkw-style wiki structure (index.md, log.md, ref/, project/, draft/)
+    # TODO(pre-GA): generalize nlkw's conventions — current templates bake in a German-default
+    # voice and specific directory typology. Before GA, extract convention choices into modes.yml
+    # or a separate `wiki.yml` so other users can pick their own defaults.
+    if with_wiki:
+        for src in paths.default_wiki_dir().glob("*.md"):
+            actions.append(_copy(src, root / "wiki" / src.name, force=force))
+        for d in ("wiki/ref", "wiki/project", "wiki/draft"):
+            gk = root / d / ".gitkeep"
+            if not gk.exists():
+                gk.parent.mkdir(parents=True, exist_ok=True)
+                gk.touch()
+                actions.append(f"wrote {gk}")
 
     # Ingest watermark (epoch)
     wm = root / ".ingest-watermark"
