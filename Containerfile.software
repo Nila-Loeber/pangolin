@@ -1,0 +1,41 @@
+# Containerfile.software — pangolin-agent-software runtime
+#
+# Minimal image hosting the Claude Code CLI under gVisor-level sandboxing,
+# WITH bash so the CLI's Bash tool can fork a real shell. Used by software
+# mode only. All other agent modes use pangolin-agent-llm (no bash) —
+# defense in depth: the absence of bash in the LLM image is a hard floor
+# that backstops the per-mode --allowedTools restriction.
+#
+# Outbound is gated by the egress proxy regardless of bash presence
+# (proxy enforces the api.anthropic.com-only allowlist for tight tier).
+#
+# Design:
+#   - Alpine base (pinned by digest, same as pangolin-agent-llm)
+#   - Node.js LTS (pinned apk version)
+#   - npm (pinned apk version)
+#   - bash (pinned apk version) — the only diff vs pangolin-agent-llm
+#   - @anthropic-ai/claude-code (pinned npm version)
+#   - Non-root uid 1000
+#   - Workdir /work
+
+FROM alpine@sha256:a4f4213abb84c497377b8544c81b3564f313746700372ec4fe84653e4fb03805
+
+# Pinned package versions. Bump requires updating the digest + versions atomically.
+# ca-certificates unpinned — trust-root bundle, see Containerfile.bash for rationale.
+RUN apk add --no-cache \
+      ca-certificates \
+      bash=5.2.26-r0 \
+      nodejs=20.15.1-r0 \
+      npm=10.9.1-r0
+
+# Pin Claude Code CLI. Bump by updating the version here AND re-auditing.
+RUN npm install -g --no-audit --no-fund @anthropic-ai/claude-code@2.1.107 \
+    && npm cache clean --force
+
+RUN adduser -D -u 1000 -s /bin/bash agent
+USER agent
+WORKDIR /work
+ENV SHELL=/bin/bash
+
+# No ENTRYPOINT — orchestrator supplies the exact claude invocation per call.
+CMD ["claude", "--version"]

@@ -47,15 +47,17 @@ def run():
     ssot = (REPO / "docs/software-agent.md").read_text()
     prompt = f"{ssot}\n\n--- TASK ---\n{json.dumps(task)}\n\nImplement the task. Run tests if they exist."
 
-    # Route through the same OAuth-aware path as the cycle's per-mode runner:
-    # OAuth subscription → sandboxed claude CLI in pangolin-agent-llm.
-    # API-key fallback  → in-process anthropic SDK on the host.
-    # Without either, fail fast with a clear message instead of letting the
-    # SDK raise a confusing "no auth method" error deep in its internals.
+    # Two paths, OAuth preferred:
+    # - OAuth (CLAUDE_CODE_OAUTH_TOKEN): claude CLI runs inside
+    #   pangolin-agent-software (CLI + bash, no shell-not-found loop). Outbound
+    #   is gated by the egress proxy. Subscription billing.
+    # - API key fallback (ANTHROPIC_API_KEY): in-process anthropic SDK on the
+    #   host with ToolExecutor. Bash tool delegates to pangolin-agent-bash
+    #   (no-network) for sandboxed shell execution. Per-token billing.
     if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
         from pangolin.orchestrate import spawn_agent_container_tooluse
         spawn_agent_container_tooluse(mode, ssot, prompt)
-        log("agent done: container path (CLAUDE_CODE_OAUTH_TOKEN)")
+        log("agent done: OAuth/CLI path (pangolin-agent-software)")
     elif os.environ.get("ANTHROPIC_API_KEY"):
         provider = create_provider(mode.provider)
         config = ToolConfig(
@@ -75,7 +77,7 @@ def run():
             model=mode.model,
             tool_executor=executor,
         )
-        log(f"agent done: {result.tool_calls} tool calls")
+        log(f"agent done: API-key path ({result.tool_calls} tool calls)")
     else:
         log("skip: no CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY in env")
         return

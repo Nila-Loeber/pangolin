@@ -303,6 +303,21 @@ def precheck() -> bool:
 # `claude --print --output-format json`.
 AGENT_IMAGE = os.environ.get("PANGOLIN_AGENT_IMAGE", "pangolin-agent-llm")
 
+# software mode needs bash for the CLI's Bash tool. The default LLM image
+# deliberately omits bash (defense-in-depth: even if --allowedTools slips,
+# bash physically isn't there). pangolin-agent-software is the same image
+# plus bash, used only by software mode.
+SOFTWARE_AGENT_IMAGE = os.environ.get(
+    "PANGOLIN_SOFTWARE_AGENT_IMAGE", "pangolin-agent-software"
+)
+
+
+def _image_for_mode(mode: "Mode") -> str:
+    """Pick the agent container image for a mode."""
+    if mode.name == "software":
+        return SOFTWARE_AGENT_IMAGE
+    return AGENT_IMAGE
+
 
 # Container resource budget for agent runs. Conservative defaults that work
 # for Opus-sized outputs; override via env for experimental runs.
@@ -456,7 +471,7 @@ def spawn_agent_container_tooluse(
         CLI_TOOL_NAMES[t] for t in mode.allowed_tools if t in CLI_TOOL_NAMES
     )
     cmd = _base_docker_flags(egress_tier=egress_tier) + _build_mounts(mode) + [
-        AGENT_IMAGE,
+        _image_for_mode(mode),
         "claude", "-p",
         "--dangerously-skip-permissions",
         "--model", mode.model,
