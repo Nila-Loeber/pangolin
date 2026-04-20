@@ -93,6 +93,78 @@ SCHEMAS = {
         },
         "required": ["index_md"],
     },
+    "thinking": {
+        "type": "object",
+        "properties": {
+            "writes": {
+                "type": "array",
+                "description": "Files to create or edit: wiki/*.md, notes/*.md, or drafts/*.md.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "content": {"type": "string"},
+                        "action": {"type": "string", "description": "create | edit | append"},
+                    },
+                    "required": ["path", "content"],
+                },
+            },
+            "processed_issues": {
+                "type": "array",
+                "items": {"type": "integer"},
+            },
+            "skipped": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "issue": {"type": "integer"},
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["issue", "reason"],
+                },
+            },
+        },
+        "required": ["writes", "processed_issues"],
+    },
+    "wiki-ingest": {
+        "type": "object",
+        "properties": {
+            "writes": {
+                "type": "array",
+                "description": "Wiki pages to create or edit. Allowed paths: wiki/*.md, wiki/ref/*.md, wiki/project/*.md, wiki/draft/*.md, wiki/log.md. NOT wiki/fragment/*, NOT wiki/SCHEMA.md.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "content": {"type": "string"},
+                        "action": {"type": "string", "description": "create | edit | append"},
+                    },
+                    "required": ["path", "content"],
+                },
+            },
+            "new_watermark": {
+                "type": "string",
+                "description": "New .ingest-watermark ISO-8601 timestamp. Must be >= the max captured_at across all absorbed fragments.",
+            },
+            "log_entry": {
+                "type": "string",
+                "description": "One-line summary for wiki/log.md (host prepends the timestamp).",
+            },
+            "skipped_fragments": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "fragment": {"type": "string"},
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["fragment", "reason"],
+                },
+            },
+        },
+        "required": ["writes"],
+    },
     "writing": {
         "type": "object",
         "properties": {

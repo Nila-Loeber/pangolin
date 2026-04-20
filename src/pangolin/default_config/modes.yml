@@ -72,23 +72,25 @@ modes:
     json_schema: research
 
   thinking:
-    description: "Analysis, synthesis, structuring, cross-links — also wiki-ingest"
+    description: "Analysis, synthesis, structuring, cross-links — json-schema output (also used by wiki-ingest phase)"
     provider: anthropic
     # Opus on subscription = no per-token penalty, and the better reasoning
     # genuinely helps wiki-ingest synthesis + thinking-mode analysis. For
     # API-key deployments, override to sonnet via PANGOLIN_MODELS profile.
     model: claude-opus-4-7
-    execution: container
-    container_runtime: runsc
+    execution: direct
     network: false
     code_execution: false
-    allowed_tools: [read, write, edit, glob]
-    denied_tools: [grep, bash]
+    allowed_tools: []
+    denied_tools: [read, write, edit, glob, grep, bash, web_search, web_fetch]
+    # Host loads context (relevant pages) into the prompt; agent returns JSON
+    # with writes; host applies them with path-scope validation.
     readable_paths: [wiki/, notes/, drafts/, .ingest-watermark]
     writable_paths: [wiki/, notes/, drafts/, .ingest-watermark]
     gh_cli: false
     autonomy: low
     trust_level: trusted
+    json_schema: thinking
 
   writing:
     description: "Produce prose drafts: json-schema output, executor writes files"
