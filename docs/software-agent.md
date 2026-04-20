@@ -32,7 +32,7 @@ You do not read `.bot-state/*.json` files and you do not call `gh` yourself.
 
 - Work only in the paths named in the issue. No scope creep.
 - No changes to `modes.yml`, `THREAT_MODEL.md`, `docs/`, `.github/`,
-  `Containerfile` — these are infrastructure files maintained manually,
+  `Containerfile.bash`/`Containerfile.llm` — these are infrastructure files maintained manually,
   and they are outside your writable paths anyway.
 
 ## Limits

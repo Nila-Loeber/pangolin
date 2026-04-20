@@ -1,4 +1,4 @@
-# Containerfile.agent — Pangolin per-agent runtime (Epic 8 spike)
+# Containerfile.llm — pangolin-agent-llm runtime
 #
 # Minimal image hosting the Claude Code CLI under gVisor-level sandboxing.
 # The host orchestrator invokes `claude` via `docker run` per agent call.
@@ -15,7 +15,7 @@
 FROM alpine@sha256:a4f4213abb84c497377b8544c81b3564f313746700372ec4fe84653e4fb03805
 
 # Pinned package versions. Bump requires updating the digest + versions atomically.
-# ca-certificates unpinned — trust-root bundle, see Containerfile for rationale.
+# ca-certificates unpinned — trust-root bundle, see Containerfile.bash for rationale.
 RUN apk add --no-cache \
       ca-certificates \
       nodejs=20.15.1-r0 \

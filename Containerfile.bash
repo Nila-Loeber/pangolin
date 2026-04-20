@@ -1,8 +1,8 @@
-# Minimal agent image for Pangolin.
+# Containerfile.bash — pangolin-agent-bash runtime
 #
 # Provides filesystem isolation for tool execution. The LLM API call
 # happens on the host — the container only runs tool implementations
-# (Read, Write, Edit, Glob, Grep, Bash).
+# (Read, Write, Edit, Glob, Grep, Bash). No network.
 #
 # Design:
 #   - Alpine base, Python + PyYAML only

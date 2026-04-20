@@ -11,8 +11,8 @@ on:
   push:
     branches: [main]
     paths:
-      - Containerfile
-      - Containerfile.agent
+      - Containerfile.bash
+      - Containerfile.llm
       - .github/workflows/build-agent-images.yml
   workflow_dispatch: {}
 
@@ -64,7 +64,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: Containerfile
+          file: Containerfile.bash
           push: true
           tags: |
             ghcr.io/${{ env.OWNER_LC }}/pangolin-agent-bash:latest
@@ -76,7 +76,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: Containerfile.agent
+          file: Containerfile.llm
           push: true
           tags: |
             ghcr.io/${{ env.OWNER_LC }}/pangolin-agent-llm:latest
