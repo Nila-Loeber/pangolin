@@ -62,12 +62,12 @@ jobs:
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
-      - name: Pull pre-built agent images from GHCR
+      - name: Pull pre-built agent + infra images from GHCR
         run: |
-          docker pull ghcr.io/nila-loeber/pangolin-agent-bash:latest
-          docker pull ghcr.io/nila-loeber/pangolin-agent-llm:latest
-          docker tag ghcr.io/nila-loeber/pangolin-agent-bash:latest pangolin-agent-bash:latest
-          docker tag ghcr.io/nila-loeber/pangolin-agent-llm:latest pangolin-agent-llm:latest
+          for img in pangolin-agent-bash pangolin-agent-llm pangolin-agent-software pangolin-egress-proxy; do
+            docker pull ghcr.io/nila-loeber/$img:latest
+            docker tag ghcr.io/nila-loeber/$img:latest $img:latest
+          done
 
       - name: Install pangolin
         run: pip install --quiet git+https://github.com/Nila-Loeber/pangolin.git@v0.1
