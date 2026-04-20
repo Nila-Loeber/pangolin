@@ -313,6 +313,74 @@ TMPFS_TMP_SIZE = "64m"       # /tmp inside the container
 TMPFS_HOME_SIZE = "128m"     # /home/agent — Claude CLI state
 
 
+# ── Egress proxy sidecar ──
+#
+# All agent containers route outbound HTTPS through this proxy. Two trust
+# tiers: tight (Anthropic+GH+PyPI+etc allowlist) and loose (any HTTPS, used
+# only by research-search WebFetch). The proxy enforces hostname allowlist
+# at CONNECT time — robust to IP rotation. See Containerfile.egress.
+PROXY_IMAGE = os.environ.get("PANGOLIN_EGRESS_IMAGE", "pangolin-egress-proxy")
+PROXY_NETWORK = os.environ.get("PANGOLIN_PROXY_NETWORK", "pangolin-net")
+PROXY_NAME = "pangolin-egress-proxy"
+PROXY_PORT_TIGHT = 3128
+PROXY_PORT_LOOSE = 3129
+
+# Cached proxy container IP. Populated by _ensure_proxy_running(). Containers
+# are configured with HTTPS_PROXY pointing at this IP rather than the proxy's
+# DNS name because gVisor (runsc) doesn't reliably resolve Docker's embedded
+# DNS for service names on user-defined networks — by-IP works.
+_PROXY_IP: str | None = None
+
+
+def _ensure_proxy_running() -> None:
+    """Start the egress proxy sidecar if not already up. Idempotent — safe
+    to call before every container spawn. Caches the proxy's IP for reuse."""
+    global _PROXY_IP
+    if _PROXY_IP is not None:
+        return
+    # Already running from a prior process?
+    result = subprocess.run(
+        ["docker", "ps", "--filter", f"name=^{PROXY_NAME}$", "--format", "{{.Names}}"],
+        capture_output=True, text=True,
+    )
+    if PROXY_NAME not in result.stdout:
+        # Ensure user-defined network exists (proxy + agents share this net)
+        subprocess.run(
+            ["docker", "network", "create", PROXY_NETWORK],
+            capture_output=True,  # ignore "already exists"
+        )
+        log(f"  starting egress proxy ({PROXY_IMAGE} on {PROXY_NETWORK})")
+        subprocess.run(
+            ["docker", "run", "-d", "--rm",
+             "--name", PROXY_NAME,
+             "--network", PROXY_NETWORK,
+             PROXY_IMAGE],
+            check=True, capture_output=True,
+        )
+    # Resolve and cache the proxy's IP.
+    inspect = subprocess.run(
+        ["docker", "inspect", PROXY_NAME, "--format",
+         "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}"],
+        capture_output=True, text=True, check=True,
+    )
+    _PROXY_IP = inspect.stdout.strip()
+    if not _PROXY_IP:
+        raise RuntimeError(f"failed to resolve {PROXY_NAME} IP from docker inspect")
+    log(f"  egress proxy IP: {_PROXY_IP}")
+
+
+def _proxy_url(tier: str = "tight") -> str:
+    """Return the HTTPS_PROXY URL for the given trust tier.
+
+    Uses the proxy's IP (not its container name) — gVisor's networking layer
+    doesn't reliably resolve Docker's embedded DNS for user-defined networks.
+    """
+    port = PROXY_PORT_LOOSE if tier == "loose" else PROXY_PORT_TIGHT
+    if _PROXY_IP is None:
+        raise RuntimeError("_proxy_url() called before _ensure_proxy_running()")
+    return f"http://{_PROXY_IP}:{port}"
+
+
 def _build_mounts(mode: "Mode") -> list[str]:
     """Build docker -v bind-mount args from a mode's readable/writable paths.
 
@@ -337,10 +405,17 @@ def _build_mounts(mode: "Mode") -> list[str]:
     return mounts
 
 
-def _base_docker_flags() -> list[str]:
+def _base_docker_flags(*, egress_tier: str = "tight") -> list[str]:
+    """Docker run flags shared by all agent container spawns.
+
+    `egress_tier` selects the proxy port: "tight" (Anthropic+GH allowlist,
+    default) or "loose" (any HTTPS — only research-search WebFetch needs this).
+    """
+    proxy_url = _proxy_url(egress_tier)
     return [
         "docker", "run", "--rm", "-i",
         "--runtime=runsc",
+        "--network", PROXY_NETWORK,
         "--read-only",
         "--cap-drop=ALL",
         "--user", f"{os.getuid()}:{os.getgid()}",
@@ -351,6 +426,10 @@ def _base_docker_flags() -> list[str]:
         "--cpus", CONTAINER_CPUS,
         "-e", "CLAUDE_CODE_OAUTH_TOKEN",
         "-e", "HOME=/home/agent",
+        "-e", f"HTTPS_PROXY={proxy_url}",
+        "-e", f"HTTP_PROXY={proxy_url}",
+        "-e", f"https_proxy={proxy_url}",
+        "-e", f"http_proxy={proxy_url}",
         "-w", "/work",
     ]
 
@@ -359,6 +438,8 @@ def spawn_agent_container_tooluse(
     mode: "Mode",
     system_prompt: str,
     user_prompt: str,
+    *,
+    egress_tier: str = "tight",
 ) -> dict:
     """Run one tool-using agent call in a gVisor container via claude CLI.
 
@@ -369,11 +450,12 @@ def spawn_agent_container_tooluse(
     """
     if not os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
         raise RuntimeError("spawn_agent_container_tooluse needs CLAUDE_CODE_OAUTH_TOKEN")
+    _ensure_proxy_running()
 
     allowed_csv = ",".join(
         CLI_TOOL_NAMES[t] for t in mode.allowed_tools if t in CLI_TOOL_NAMES
     )
-    cmd = _base_docker_flags() + _build_mounts(mode) + [
+    cmd = _base_docker_flags(egress_tier=egress_tier) + _build_mounts(mode) + [
         AGENT_IMAGE,
         "claude", "-p",
         "--dangerously-skip-permissions",
@@ -410,7 +492,7 @@ def spawn_agent_container_direct(
     model: str,
     *,
     allowed_tools: str = "",
-    network: bool = True,
+    egress_tier: str = "tight",
     raw_text: bool = False,
     timeout: int = 120,
 ) -> dict | str:
@@ -421,13 +503,15 @@ def spawn_agent_container_direct(
 
     If `raw_text=True`, returns the raw text from the CLI's `result` field
     without JSON parsing (for phase 1 search where the output is prose).
+
+    `egress_tier`: "tight" (Anthropic+GH allowlist, default) or "loose" (any
+    HTTPS — only research-search-WebFetch needs this).
     """
     if not os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
         raise RuntimeError("spawn_agent_container_direct needs CLAUDE_CODE_OAUTH_TOKEN in env")
+    _ensure_proxy_running()
 
-    base = _base_docker_flags()
-    if not network:
-        base += ["--network=none"]
+    base = _base_docker_flags(egress_tier=egress_tier)
     # Comma-separated single arg, matching claude CLI convention.
     tools_args = ["--allowedTools", allowed_tools.replace(" ", ",")] if allowed_tools.strip() else []
     docker_cmd = base + [
@@ -1021,6 +1105,10 @@ class CycleRunner:
     def _setup(self) -> None:
         import time
         self.cycle_start_ts = time.time()  # for _has_new_writes_in() post-checks
+        # Egress proxy must be running before any agent container is spawned.
+        # Idempotent — no-op if already up from a prior cycle.
+        if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+            _ensure_proxy_running()
         # %f gives microseconds → branch names stay unique even if cron and a
         # manual dispatch fire in the same second.
         self.ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
@@ -1137,7 +1225,7 @@ class CycleRunner:
                     user_prompt=search_prompt,
                     model=mode.model,
                     allowed_tools="WebSearch WebFetch",
-                    network=True,  # needed for WebSearch + API
+                    egress_tier="loose",  # WebFetch is client-side: needs to reach arbitrary HTTPS hosts
                     raw_text=True,  # prose output, not JSON
                     timeout=300,  # WebSearch in gVisor is slow on cold start
                 )
@@ -1146,10 +1234,12 @@ class CycleRunner:
                     continue
                 search_results = search_results[:50000]  # cap for phase 2 context
 
-                # Phase 2 ("summarise"): container, no tools, no network.
+                # Phase 2 ("summarise"): container, no tools, tight egress.
                 # Input is search results (untrusted web content). Container
-                # has the OAuth token but --network=none blocks exfiltration.
-                # Safe: trifecta (c) missing — no outbound channel.
+                # network is restricted to api.anthropic.com via the egress
+                # proxy's tight allowlist. Safe: trifecta (c) missing — no
+                # tools means no agent-usable outbound channel; the proxy
+                # gates the only network path to a single API endpoint.
                 schema = SCHEMAS.get(mode.json_schema, {})
                 summarise_system = (
                     f"{ssot}\n\nRespond with a single JSON object matching this schema: "
@@ -1171,10 +1261,9 @@ class CycleRunner:
                     user_prompt=summarise_prompt,
                     model=mode.model,
                     allowed_tools="",  # zero tools — model has no exfil mechanism
-                    # network=True needed: CLI must reach api.anthropic.com for auth.
-                    # Trifecta (c) is still broken: the model has zero tools, so it
-                    # cannot initiate HTTP requests. The network is infrastructure
-                    # (CLI↔API), not an agent-usable outbound channel.
+                    # egress_tier defaults to "tight": api.anthropic.com only.
+                    # The CLI's API call is allowed; nothing else is. Combined
+                    # with allowed_tools="" the model literally cannot exfil.
                     timeout=300,
                 )
                 findings = result.get("findings", [])
