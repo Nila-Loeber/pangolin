@@ -1,4 +1,4 @@
-"""Pangolin CLI — `pangolin init|run|software|version`."""
+"""Pangolin CLI — `pangolin init|run|harden-egress|version`."""
 
 from __future__ import annotations
 
