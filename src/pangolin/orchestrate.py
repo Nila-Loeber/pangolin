@@ -55,16 +55,29 @@ log = make_logger("pangolin")
 
 CYCLE_STATE_LABEL = "cycle-state"
 
+# Process-local cache: prevents the "create sentinel twice in one cycle" race
+# where precheck()'s create completes but isn't yet visible to triage's
+# subsequent list query (GitHub list-after-create is eventually consistent).
+_SENTINEL_CACHE: int | None = None
+
 
 def _get_or_create_sentinel() -> int:
-    """Get the cycle-state sentinel issue number, creating it if needed."""
+    """Get the cycle-state sentinel issue number, creating it if needed.
+
+    Cached for the lifetime of the process so the create-then-list race
+    can't produce duplicate sentinels within a single cycle run.
+    """
+    global _SENTINEL_CACHE
+    if _SENTINEL_CACHE is not None:
+        return _SENTINEL_CACHE
     raw = gh(
         "issue", "list", "--state", "open", "--label", CYCLE_STATE_LABEL,
         "--limit", "1", "--json", "number", check=False,
     )
     issues = json.loads(raw) if raw else []
     if issues:
-        return issues[0]["number"]
+        _SENTINEL_CACHE = issues[0]["number"]
+        return _SENTINEL_CACHE
     # Ensure the label exists (gh issue create fails if it doesn't)
     gh("label", "create", CYCLE_STATE_LABEL,
        "--description", "Sentinel issue for cycle watermarks",
@@ -82,8 +95,8 @@ def _get_or_create_sentinel() -> int:
     log(f"  created sentinel: {url}")
     if not url or "/" not in url:
         raise RuntimeError(f"Failed to create sentinel issue (got: {url!r})")
-    num = int(url.rstrip("/").split("/")[-1])
-    return num
+    _SENTINEL_CACHE = int(url.rstrip("/").split("/")[-1])
+    return _SENTINEL_CACHE
 
 
 def _read_sentinel_watermark() -> str:
@@ -205,13 +218,17 @@ def _research_inference_filter(claimed: list[int]) -> list[int]:
         if claimed:
             log(f"  research: inference dropped all claimed (no wiki/fragment dir): {claimed}")
         return []
+    # Cutoff sized to comfortably cover frontmatter even with verbose summaries
+    # (10k chars). The 2000-char cap that lived here previously caused false
+    # negatives when the agent emitted a long `summary:` field that pushed the
+    # source_issue line past the cutoff.
     kept, dropped = [], []
     for n in claimed:
         needle = f"source_issue: {n}"
         found = False
         for f in fragdir.glob("*.md"):
             try:
-                if needle in f.read_text(encoding="utf-8", errors="replace")[:2000]:
+                if needle in f.read_text(encoding="utf-8", errors="replace")[:10000]:
                     found = True
                     break
             except OSError:
@@ -363,12 +380,17 @@ def spawn_agent_container_tooluse(
         "--model", mode.model,
         "--system-prompt", system_prompt,
     ] + (["--allowedTools", allowed_csv] if allowed_csv else [])
+    # Timeout sized for legitimate work: thinking-mode wiki-ingest of a single
+    # fragment, software-mode of a small code task. Longer hangs typically mean
+    # the agent is wedged — a known case is software-mode running in
+    # pangolin-agent-llm: the LLM image deliberately omits a Posix shell, so the
+    # Bash tool errors out and Opus loops on retries until docker kills it.
     try:
         result = subprocess.run(
-            cmd, input=user_prompt, capture_output=True, text=True, timeout=600,
+            cmd, input=user_prompt, capture_output=True, text=True, timeout=180,
         )
     except subprocess.TimeoutExpired:
-        log(f"  container agent {mode.name}: timed out (600s)")
+        log(f"  container agent {mode.name}: timed out (180s)")
         return {}
     if result.returncode != 0:
         log(f"  container agent {mode.name}: exit {result.returncode}; stderr={result.stderr[:300]}")
@@ -475,22 +497,38 @@ def _parse_json_array_from_text(raw: str) -> list | None:
     The CLI wraps inner JSON in markdown fences; this strips them and
     falls back to a greedy array extraction. Returns None if no valid
     array can be parsed.
+
+    Also accepts an object that wraps the array under a single
+    list-valued field (e.g. `{"decisions": [...]}`, `{"comments": [...]}`),
+    which is the shape some agents naturally emit despite SSoT guidance to
+    return a bare array.
     """
+    def _coerce_to_list(parsed):
+        if isinstance(parsed, list):
+            return parsed
+        if isinstance(parsed, dict):
+            list_fields = [v for v in parsed.values() if isinstance(v, list)]
+            if len(list_fields) == 1:
+                return list_fields[0]
+        return None
+
     raw = (raw or "").strip()
-    m = re.search(r"```(?:json)?\s*(\[.*?\])\s*```", raw, re.DOTALL)
+    m = re.search(r"```(?:json)?\s*(.*?)\s*```", raw, re.DOTALL)
     if m:
-        try: return json.loads(m.group(1))
-        except json.JSONDecodeError: pass
+        try:
+            coerced = _coerce_to_list(json.loads(m.group(1)))
+            if coerced is not None:
+                return coerced
+        except json.JSONDecodeError:
+            pass
     # Try greedy top-level array
     m = re.search(r"\[.*\]", raw, re.DOTALL)
     if m:
         try: return json.loads(m.group(0))
         except json.JSONDecodeError: pass
-    # Try direct parse (no fences)
+    # Try direct parse (no fences) — accept array OR object-with-single-list
     try:
-        obj = json.loads(raw)
-        if isinstance(obj, list):
-            return obj
+        return _coerce_to_list(json.loads(raw))
     except json.JSONDecodeError:
         pass
     return None
@@ -575,16 +613,19 @@ def _write_research_fragment(issue_n: int, finding: dict) -> str | None:
     source = _san(finding["source"])
     summary = _san(finding["summary"])
     why = _san(finding.get("why_relevant", "(not specified)"))
-    date = finding.get("date") or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # Filename uses today's date so fragments sort by capture order. The
+    # frontmatter `date:` field below uses the agent-provided source date.
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    src_date = finding.get("date") or today
     slug = _slugify(title)
-    filename = f"{date[:10]}-issue{issue_n}-{slug}.md"
+    filename = f"{today}-issue{issue_n}-{slug}.md"
     rel = f"wiki/fragment/{filename}"
     path = REPO / rel
     path.parent.mkdir(parents=True, exist_ok=True)
     body = f"""---
 title: "{title}"
 source: "{source}"
-date: {date[:10]}
+date: {src_date[:10]}
 summary: "{summary}"
 source_issue: {issue_n}
 captured_at: {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}
@@ -600,6 +641,16 @@ captured_by: research-agent
 {why}
 """
     path.write_text(body, encoding="utf-8")
+    # Diagnostic: when the validator's frontmatter check fails, the file is
+    # rm-f'd and we lose the evidence. Mirror to /tmp so we can inspect after.
+    line_count = body.count("\n")
+    log(f"  research: fragment {rel} ({line_count} lines, {len(body)} bytes)")
+    try:
+        debug_dir = Path("/tmp/pangolin-fragments")
+        debug_dir.mkdir(exist_ok=True)
+        (debug_dir / Path(rel).name).write_text(body, encoding="utf-8")
+    except OSError:
+        pass
     return rel
 
 
