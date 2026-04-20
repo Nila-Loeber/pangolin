@@ -29,6 +29,11 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     sub.add_parser("run", help="Run one full conversational cycle (includes one software task if queued).")
+    sub.add_parser(
+        "harden-egress",
+        help="Bring up the egress proxy + lock host egress via iptables. "
+             "Workflow step before `pangolin run`.",
+    )
     sub.add_parser("version", help="Print the installed version.")
 
     args = parser.parse_args(argv)
@@ -39,6 +44,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "run":
         from pangolin.orchestrate import run_cycle
         run_cycle()
+        return 0
+    if args.cmd == "harden-egress":
+        from pangolin.orchestrate import harden_egress
+        harden_egress()
         return 0
     if args.cmd == "version":
         from pangolin import __version__

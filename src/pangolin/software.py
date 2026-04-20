@@ -17,6 +17,7 @@ from pathlib import Path
 
 from pangolin.core import REPO, gh, make_logger
 from pangolin.modes import load_modes
+from pangolin.paths import resolve_config
 from pangolin.providers import create_provider
 from pangolin.tools import ToolConfig, ToolExecutor
 
@@ -24,7 +25,7 @@ log = make_logger("software")
 
 
 def run():
-    modes = load_modes(REPO / "modes.yml")
+    modes = load_modes()
     mode = modes["software"]
 
     # Find oldest mode:software issue
@@ -44,7 +45,7 @@ def run():
     # Create branch
     subprocess.run(["git", "checkout", "-b", branch], cwd=str(REPO), capture_output=True)
 
-    ssot = (REPO / "docs/software-agent.md").read_text()
+    ssot = resolve_config("docs/software-agent.md").read_text()
     prompt = f"{ssot}\n\n--- TASK ---\n{json.dumps(task)}\n\nImplement the task. Run tests if they exist."
 
     # Two paths, OAuth preferred:

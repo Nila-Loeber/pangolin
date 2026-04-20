@@ -33,7 +33,7 @@ from pathlib import Path
 
 from pangolin.core import AGENT_MARKER, REPO, gh, make_logger, wrap_agent_body
 from pangolin.modes import SCHEMAS, Mode, load_modes
-from pangolin.paths import validate_output_script
+from pangolin.paths import resolve_config, validate_output_script
 from pangolin.providers import ChatResult, create_provider
 from pangolin.tools import CLI_TOOL_NAMES, ToolConfig, ToolExecutor
 
@@ -825,16 +825,17 @@ def run_container_agent(
     tools = executor.get_tool_definitions()
 
     # Load the SSoT doc as system prompt. Map mode name → docs/<mode>-agent.md
-    # with a few hand-picked aliases.
-    ssot_path = REPO / "docs" / f"{mode.name}-agent.md"
-    if not ssot_path.exists():
-        for alt in [f"{mode.name}.md", "inbox-triage.md", "inbox-summary.md", "wiki-ingest.md"]:
-            alt_path = REPO / "docs" / alt
-            if alt_path.exists():
-                ssot_path = alt_path
-                break
-
-    system = ssot_path.read_text() if ssot_path.exists() else f"You are the {mode.name} agent."
+    # with a few hand-picked aliases. resolve_config() lets wiki repos override
+    # the package default by checking in their own docs/<name>.md.
+    system = f"You are the {mode.name} agent."
+    for candidate in [f"docs/{mode.name}-agent.md", f"docs/{mode.name}.md",
+                      "docs/inbox-triage.md", "docs/inbox-summary.md",
+                      "docs/wiki-ingest.md"]:
+        try:
+            system = resolve_config(candidate).read_text()
+            break
+        except FileNotFoundError:
+            continue
 
     result = provider.chat(
         system=system,
@@ -1076,7 +1077,7 @@ class CycleRunner:
     """
 
     def __init__(self):
-        self.modes = load_modes(REPO / "modes.yml")
+        self.modes = load_modes()
         self._providers: dict = {}
         # Tickets each agent reported as processed; closed at cycle end so
         # the close-comment can reference the PR URL.
@@ -1145,7 +1146,7 @@ class CycleRunner:
             "--json", "number,title,body,author,createdAt,updatedAt,comments,labels",
         )
         all_inbox = json.loads(issues_json) if issues_json else []
-        ssot = (REPO / "docs/inbox-triage.md").read_text()
+        ssot = resolve_config("docs/inbox-triage.md").read_text()
         watermark = _read_sentinel_watermark()
 
         # Pre-filter: only items with new activity since the watermark
@@ -1218,7 +1219,7 @@ class CycleRunner:
         if not research_list:
             return
         log(f"research: {len(research_list)} owner-activated ticket(s)")
-        ssot = (REPO / "docs/research-agent.md").read_text()
+        ssot = resolve_config("docs/research-agent.md").read_text()
         all_processed: list[int] = []
         research_provider = self.get_provider(mode.provider)
         for issue in research_list:
@@ -1337,7 +1338,7 @@ class CycleRunner:
             return
         log("=== WIKI-INGEST ===")
         mode = self.modes["thinking"]  # inherits model / provider / permission profile
-        wiki_ssot = (REPO / "docs/wiki-ingest.md").read_text()
+        wiki_ssot = resolve_config("docs/wiki-ingest.md").read_text()
         schema_doc = (REPO / "wiki/SCHEMA.md").read_text()
         watermark = (
             (REPO / ".ingest-watermark").read_text().strip()
@@ -1550,7 +1551,7 @@ class CycleRunner:
             self._run_thinking_direct(mode, task_list)
             return
         # Container-tooluse path (thinking, future tool-use modes).
-        ssot = (REPO / f"docs/{mode_name}-agent.md").read_text()
+        ssot = resolve_config(f"docs/{mode_name}-agent.md").read_text()
         all_processed: list[int] = []
         wrote_anything = False
         for task in task_list:
@@ -1581,7 +1582,7 @@ class CycleRunner:
         {path, content, action} entries; the host writes them with path-scope
         validation. No tool-use means no shell-not-found loops, no claim/no-write
         hallucinations, and a single API call instead of a multi-tool iteration."""
-        ssot = (REPO / "docs/writing-agent.md").read_text()
+        ssot = resolve_config("docs/writing-agent.md").read_text()
         schema = SCHEMAS.get(mode.json_schema or "writing", {})
         all_processed: list[int] = []
         all_written: list[str] = []
@@ -1649,7 +1650,7 @@ class CycleRunner:
         writing — agent emits writes inline, host applies with path-scope
         validation (wiki/, notes/, drafts/ — not wiki/fragment/ and not
         wiki/SCHEMA.md)."""
-        ssot = (REPO / "docs/thinking-agent.md").read_text()
+        ssot = resolve_config("docs/thinking-agent.md").read_text()
         schema = SCHEMAS.get(mode.json_schema or "thinking", {})
         all_processed: list[int] = []
         all_written: list[str] = []
@@ -1801,7 +1802,7 @@ class CycleRunner:
         # Build the SSoT bundle ONCE: actual SSoT + all current docs/*.md.
         # This goes into the system prompt → cached across per-issue calls
         # by providers.py (90% input discount on subsequent calls).
-        ssot = (REPO / "docs/self-improve.md").read_text()
+        ssot = resolve_config("docs/self-improve.md").read_text()
         docs_content = ""
         for f in sorted((REPO / "docs").glob("*.md")):
             docs_content += f"--- FILE: {f.name} ---\n{f.read_text()}\n\n"
@@ -1884,7 +1885,7 @@ class CycleRunner:
             ["git", "diff", "--name-only", "HEAD~1..HEAD"],
             cwd=str(REPO), capture_output=True, text=True,
         ).stdout
-        ssot = (REPO / "docs/inbox-summary.md").read_text()
+        ssot = resolve_config("docs/inbox-summary.md").read_text()
         user_prompt = (
             f"--- INBOX ---\n{inbox}\n\n--- SPAWNED ---\n{spawned}\n\n"
             f"--- CHANGED ---\n{changed}\n\n--- PR ---\n{self.pr_url or 'none'}\n\n"
@@ -1922,6 +1923,63 @@ def run_cycle() -> None:
     # _commit() already returns us to main. Pick up one software ticket if any.
     from pangolin import software
     software.run()
+
+
+# ── Egress hardening (runs as workflow step, before `pangolin run`) ──
+
+_IPTABLES_RULES = [
+    # Allow ongoing connections.
+    ["iptables", "-I", "OUTPUT", "1", "-m", "state", "--state",
+     "ESTABLISHED,RELATED", "-j", "ACCEPT"],
+    # Loopback.
+    ["iptables", "-I", "OUTPUT", "2", "-o", "lo", "-j", "ACCEPT"],
+    # Docker-internal networks (proxy container lives here).
+    ["iptables", "-A", "OUTPUT", "-d", "172.16.0.0/12", "-j", "ACCEPT"],
+    # Runner-local (GH Actions private net) + Azure metadata link-local.
+    ["iptables", "-A", "OUTPUT", "-d", "10.0.0.0/8", "-j", "ACCEPT"],
+    ["iptables", "-A", "OUTPUT", "-d", "169.254.0.0/16", "-j", "ACCEPT"],
+    # DNS (UDP + TCP).
+    ["iptables", "-A", "OUTPUT", "-p", "udp", "--dport", "53", "-j", "ACCEPT"],
+    ["iptables", "-A", "OUTPUT", "-p", "tcp", "--dport", "53", "-j", "ACCEPT"],
+    # Everything else: REJECT.
+    ["iptables", "-A", "OUTPUT", "-j", "REJECT"],
+]
+
+
+def harden_egress() -> None:
+    """Bring up the egress proxy and lock host egress to it via iptables.
+
+    Exported as `pangolin harden-egress` — the agent-cycle workflow calls
+    this before `pangolin run` so that:
+      - the pangolin-egress-proxy sidecar is running
+      - host OUTPUT traffic is REJECTed unless it's loopback, Docker-internal,
+        DNS, or runner-private (defense-in-depth behind the proxy's hostname
+        allowlist)
+      - HTTPS_PROXY is written to $GITHUB_ENV so host `gh`, `pip`, and the
+        SDK fallback path all route through the proxy
+
+    Moving this out of the workflow yml keeps the yml a thin shim — any
+    future egress-policy change ships with the pip package, no per-wiki sync.
+    """
+    _ensure_proxy_running()
+    for cmd in _IPTABLES_RULES:
+        subprocess.run(["sudo", *cmd], check=True)
+
+    proxy = f"http://{_PROXY_IP}:3128"
+    no_proxy = "localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8"
+    gh_env = os.environ.get("GITHUB_ENV")
+    if gh_env:
+        with open(gh_env, "a") as f:
+            f.write(f"HTTPS_PROXY={proxy}\n")
+            f.write(f"HTTP_PROXY={proxy}\n")
+            f.write(f"NO_PROXY={no_proxy}\n")
+        log(f"harden-egress: proxy up at {proxy}, iptables locked, env exported")
+    else:
+        # Local invocation (no GH Actions) — just report.
+        log(f"harden-egress: proxy up at {proxy}, iptables locked")
+        log(f"  set manually: HTTPS_PROXY={proxy}")
+        log(f"  set manually: HTTP_PROXY={proxy}")
+        log(f"  set manually: NO_PROXY={no_proxy}")
 
 
 if __name__ == "__main__":

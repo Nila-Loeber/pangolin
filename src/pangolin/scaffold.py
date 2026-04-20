@@ -25,19 +25,23 @@ def _copy(src: Path, dst: Path, *, force: bool) -> str:
 def init_repo(
     *, force: bool = False, with_wiki: bool = False, cwd: Path | None = None
 ) -> int:
-    """Scaffold pangolin config into `cwd` (default: current working directory)."""
+    """Scaffold pangolin config into `cwd` (default: current working directory).
+
+    Ships only the thin workflow shim + user-owned wiki content. The SSoT
+    runtime config (modes.yml, docs/*-agent.md) lives inside the installed
+    pangolin package — `pip install pangolin@X` updates behavior atomically.
+
+    Wiki repos may override any package default by checking in a same-named
+    copy at the same relative path (see paths.resolve_config); `pangolin
+    init` does not scaffold these to avoid creating silent drift.
+    """
     root = (cwd or Path.cwd()).resolve()
     actions: list[str] = []
 
     # Single-file copies
-    actions.append(_copy(paths.default_modes_yaml(), root / "modes.yml", force=force))
     actions.append(_copy(paths.default_wiki_schema(), root / "wiki" / "SCHEMA.md", force=force))
 
-    # docs/*.md
-    for src in paths.default_docs_dir().glob("*.md"):
-        actions.append(_copy(src, root / "docs" / src.name, force=force))
-
-    # workflows
+    # workflows (thin shim — all behavior in the pip package)
     for src in paths.default_workflows_dir().glob("*.yml"):
         actions.append(_copy(src, root / ".github" / "workflows" / src.name, force=force))
 
@@ -79,8 +83,9 @@ def init_repo(
     print("  1. Set repository secrets in GitHub:")
     print("     - CLAUDE_CODE_OAUTH_TOKEN  (Claude Max subscription token)")
     print("     - ANTHROPIC_API_KEY        (fallback; can be empty if OAuth is set)")
-    print("  2. Edit docs/*.md to match your domain/voice.")
-    print("  3. Edit modes.yml if you need different permission profiles.")
-    print("  4. Open an inbox issue, then dispatch .github/workflows/agent-cycle.yml")
+    print("  2. (optional) Customize behavior by checking in overrides:")
+    print("     - modes.override.yml   — deep-merged on top of package defaults")
+    print("     - docs/<name>.md       — wins over the package default for that file")
+    print("  3. Open an inbox issue, then dispatch .github/workflows/agent-cycle.yml")
 
     return 0
