@@ -32,8 +32,17 @@ RUN apk add --no-cache \
       gettext=0.22.5-r0 \
       openssl=3.3.4-r0 \
       squid=6.9-r0 \
+      python3=3.12.11-r0 \
+      py3-aiohttp=3.10.5-r0 \
   && squid -v 2>&1 | grep -q -- '--enable-ssl-crtd' \
   || (echo "FATAL: Alpine squid was built without --enable-ssl-crtd; ssl-bump needs a rebuild" >&2 && exit 1)
+
+# Phase B inspector: reverse-proxy between squid (post-ssl-bump plaintext)
+# and api.anthropic.com. Validates /v1/messages request bodies against
+# the server-side-tool policy; rejects attacker-supplied web_fetch etc.
+# Shipped as a standalone module (no pangolin-package deps) so the proxy
+# image stays lean.
+COPY src/pangolin/egress_inspector.py /usr/local/bin/egress_inspector.py
 
 # squid.conf template — ${ANTHROPIC_TOKEN} is substituted at container
 # startup by envsubst. Config structure:
@@ -61,11 +70,23 @@ acl loose_port myportname loose
 
 # Bump-target: just api.anthropic.com. Everything else on tight is spliced.
 acl anthropic_hosts ssl::server_name api.anthropic.com
+# Dstdomain variant (post-bump, acts on the decrypted HTTP Host header).
+# Used for peer-routing + header-injection rules below.
+acl anthropic_bumped dstdomain api.anthropic.com
 
 acl step1 at_step SslBump1
 ssl_bump peek step1
 ssl_bump bump anthropic_hosts
 ssl_bump splice all
+
+# Phase B: route bumped Anthropic traffic to the in-container inspector
+# (egress_inspector.py on 127.0.0.1:9000). The inspector validates request
+# bodies against the server-side-tool policy and re-establishes TLS to
+# api.anthropic.com. Non-Anthropic traffic keeps its normal direct path.
+cache_peer 127.0.0.1 parent 9000 0 no-query originserver name=inspector
+cache_peer_access inspector allow anthropic_bumped
+cache_peer_access inspector deny all
+never_direct allow anthropic_bumped
 
 # Tight allowlist (unchanged from Phase-0 proxy). dstdomain matches CONNECT
 # target hostname (HTTPS) and Host header (HTTP) — robust to IP rotation.
@@ -92,7 +113,7 @@ http_access deny all
 # The agent container has no access to $ANTHROPIC_TOKEN — it lives only
 # in this proxy's environment and is written into the config at startup.
 request_header_access Authorization deny all
-request_header_add Authorization "Bearer ${ANTHROPIC_TOKEN}" anthropic_hosts
+request_header_add Authorization "Bearer ${ANTHROPIC_TOKEN}" anthropic_bumped
 
 cache deny all
 access_log stdio:/dev/stdout
@@ -145,6 +166,21 @@ fi
 # Interpolate the token into the config.
 ANTHROPIC_TOKEN="${ANTHROPIC_TOKEN}" envsubst '$ANTHROPIC_TOKEN' \
     < /etc/squid/squid.conf.template > /etc/squid/squid.conf
+
+# Phase B: bring up the policy inspector first so squid's cache_peer
+# to 127.0.0.1:9000 succeeds on the first Anthropic request.
+echo "[start-proxy] starting egress_inspector (policy: deny server-side tools)"
+python3 /usr/local/bin/egress_inspector.py &
+INSPECTOR_PID=$!
+
+# Reap the inspector if squid exits — the two live together.
+trap 'kill "$INSPECTOR_PID" 2>/dev/null' EXIT TERM INT
+
+# Brief startup poll so the cache_peer isn't DOWN on first request.
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if nc -z 127.0.0.1 9000 2>/dev/null; then break; fi
+    sleep 0.2
+done
 
 exec squid -N -f /etc/squid/squid.conf
 EOF
