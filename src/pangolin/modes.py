@@ -266,24 +266,40 @@ SCHEMAS = {
 }
 
 
-def load_modes(path: Path) -> dict[str, Mode]:
-    """Load modes from modes.yml.
+def load_modes(path: Path | None = None) -> dict[str, Mode]:
+    """Load modes.
 
-    Two override mechanisms (per-mode wins over global if both set):
+    Resolution order:
+    1. If `path` is given, load from that single file (used by tests).
+    2. Otherwise: load the package-shipped default (modes.yml), then deep-merge
+       any `<wiki-repo>/modes.override.yml` on top. This makes behavior
+       atomically upgradable — `pip install pangolin@X` updates every wiki
+       without a sync step. Wikis only check in override deltas.
 
-    1. `PANGOLIN_MODELS=path/to/models.yml`: load per-mode (provider, model)
-       overrides from a YAML file. Modes not listed keep modes.yml defaults.
-       Useful for switching between cost/quality profiles (e.g.
-       `models.test.yml` puts cheap-but-OK modes on Haiku for E2E flow
-       testing while keeping triage/self-improve on Sonnet for reasoning).
-       Forward-compatible with non-Anthropic providers (e.g. Scaleway).
+    Additional runtime model-selection overrides (orthogonal to the above):
 
-    2. `PANGOLIN_MODEL_OVERRIDE=<model-id>`: legacy global override —
-       replaces every mode's model with the same value. Coarser; kept
-       for the simplest "just throw Haiku at everything" path.
+    - `PANGOLIN_MODELS=path/to/models.yml`: per-mode (provider, model)
+      override file. Useful for cost/quality profiles.
+    - `PANGOLIN_MODEL_OVERRIDE=<model-id>`: coarse global override —
+      replaces every mode's model with the same value.
     """
     import os
-    raw = yaml.safe_load(path.read_text())
+    from pangolin.paths import default_modes_yaml
+
+    if path is None:
+        raw = yaml.safe_load(default_modes_yaml().read_text())
+        # Overlay wiki-repo override if present (optional).
+        try:
+            from pangolin.core import REPO
+            override_path = REPO / "modes.override.yml"
+            if override_path.exists():
+                override = yaml.safe_load(override_path.read_text()) or {}
+                _deep_merge_modes(raw, override)
+        except Exception:
+            # Tests may import without a git repo; swallow and use package defaults.
+            pass
+    else:
+        raw = yaml.safe_load(path.read_text())
 
     # Load per-mode overrides (option 1)
     overrides: dict[str, dict] = {}
@@ -329,6 +345,24 @@ def load_modes(path: Path) -> dict[str, Mode]:
         )
     _validate_invariants(modes)
     return modes
+
+
+def _deep_merge_modes(base: dict, override: dict) -> None:
+    """Overlay `override` onto `base` in place. Structure:
+
+        {modes: {<name>: {<field>: value, ...}, ...}}
+
+    Per-mode: existing field values are replaced by override values; fields
+    absent from override are untouched. A mode present in override but not
+    base is added. A mode absent from override is unchanged.
+    """
+    over_modes = (override or {}).get("modes") or {}
+    base_modes = base.setdefault("modes", {})
+    for name, cfg in over_modes.items():
+        if name in base_modes and isinstance(cfg, dict):
+            base_modes[name].update(cfg)
+        else:
+            base_modes[name] = cfg
 
 
 def _validate_invariants(modes: dict[str, Mode]):

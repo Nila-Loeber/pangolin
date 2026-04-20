@@ -43,3 +43,25 @@ def default_workflows_dir() -> Path:
 
 def default_wiki_dir() -> Path:
     return default_config_root() / "wiki"
+
+
+def resolve_config(relative: str) -> Path:
+    """Resolve a config path with wiki-override-wins-over-package-default.
+
+    Runtime config (modes.yml, docs/*-agent.md, validate_output.sh) lives in
+    the package so that `pip install pangolin@X` updates behavior atomically
+    across every wiki repo. A wiki may still override any file by checking
+    in a same-named copy at the same relative path — the wiki's copy wins.
+
+    Raises FileNotFoundError if neither location has the file.
+    """
+    from pangolin.core import REPO
+    wiki = REPO / relative
+    if wiki.exists():
+        return wiki
+    pkg = default_config_root() / relative
+    if pkg.exists():
+        return pkg
+    raise FileNotFoundError(
+        f"No config at {relative!r} (tried {wiki} and {pkg})"
+    )

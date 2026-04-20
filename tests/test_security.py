@@ -6,11 +6,11 @@ import pytest, yaml
 REPO = Path(__file__).parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 from pangolin.modes import load_modes
-from pangolin.paths import validate_output_script
+from pangolin.paths import default_modes_yaml, validate_output_script
 from pangolin.tools import ToolConfig, ToolExecutor
 
 def read(p): return p.read_text()
-def modes(): return load_modes(REPO / "modes.yml")
+def modes(): return load_modes()  # loads the package default (SSoT)
 
 class TestSfrTool:
     @pytest.mark.sfr("TOOL.1")
@@ -40,10 +40,12 @@ class TestSfrFs:
         return ToolExecutor(ToolConfig(REPO, r, w, c), t or {"read","write","glob"})
     @pytest.mark.sfr("FS.1")
     def test_FS_read_blocked(self):
-        assert self._ex(["docs/"],["wiki/fragment/"]).execute("read",{"path":"modes.yml"}).is_error
+        # scope = src/, read README.md (exists, but outside scope) → must error.
+        assert self._ex(["src/"],["wiki/fragment/"]).execute("read",{"path":"README.md"}).is_error
     @pytest.mark.sfr("FS.1")
     def test_FS_read_allowed(self):
-        assert not self._ex(["docs/"],["wiki/fragment/"]).execute("read",{"path":"docs/research-agent.md"}).is_error
+        # scope = src/, read a file inside scope → must succeed.
+        assert not self._ex(["src/"],["wiki/fragment/"]).execute("read",{"path":"src/pangolin/cli.py"}).is_error
     @pytest.mark.sfr("FS.2")
     def test_FS_write_blocked(self):
         assert self._ex(["docs/"],["wiki/fragment/"]).execute("write",{"path":"docs/evil.md","content":"x"}).is_error
@@ -103,7 +105,7 @@ class TestSfrTrifecta:
     @pytest.mark.sfr("TRIFECTA.4")
     def test_validator_blocks_untrusted_code(self):
         import yaml, tempfile
-        raw = yaml.safe_load((REPO/"modes.yml").read_text())
+        raw = yaml.safe_load(default_modes_yaml().read_text())
         raw["modes"]["research"]["code_execution"] = True
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
             yaml.dump(raw, f); f.flush()
@@ -131,15 +133,23 @@ class TestSfrFlm:
         assert "self-improve.md" in read(REPO/"src/pangolin/orchestrate.py")
 
 class TestHardening:
-    def test_egress_hardened(self):
-        """Runtime workflow enforces egress via the self-hosted proxy +
-        iptables bootstrap (replacing step-security/harden-runner)."""
+    def test_workflow_is_thin_shim(self):
+        """agent-cycle.yml is a thin shim — it calls `pangolin harden-egress`
+        + `pangolin run`, nothing more. All orchestration logic lives in the
+        pip package so updates are atomic across wiki repos."""
         wf = read(REPO/"src/pangolin/default_config/workflows/agent-cycle.yml")
-        assert "pangolin-egress-proxy" in wf
-        assert "iptables" in wf
-        assert "HTTPS_PROXY" in wf
-        # The replacement is complete — harden-runner is gone from the cycle.
+        assert "pangolin harden-egress" in wf
+        assert "pangolin run" in wf
+        assert "pangolin-egress-proxy" in wf  # image pulled in setup step
         assert "harden-runner" not in wf
+    def test_egress_hardening_lives_in_package(self):
+        """The iptables + HTTPS_PROXY logic moved from the workflow yml into
+        orchestrate.harden_egress() so shipping a new egress policy requires
+        only a pip package bump."""
+        c = read(REPO/"src/pangolin/orchestrate.py")
+        assert "def harden_egress" in c
+        assert "iptables" in c
+        assert "HTTPS_PROXY" in c
     @pytest.mark.sfr("FLM.1")
     def test_iteration_limit(self):
         c = read(REPO/"src/pangolin/providers.py")
@@ -158,7 +168,7 @@ class TestModesConsistency:
     def test_egress_invariant_enforced_at_load(self):
         """modes.py rejects invalid egress values at load time."""
         import tempfile
-        raw = yaml.safe_load((REPO/"modes.yml").read_text())
+        raw = yaml.safe_load(default_modes_yaml().read_text())
         raw["modes"]["software"]["egress"] = "wide-open"
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
             yaml.dump(raw, f); f.flush()
@@ -257,6 +267,48 @@ class TestSfrStruct4:
         ex = ToolExecutor(cfg, {"report_processed"})
         ex.execute("report_processed", {"numbers": [1, 2, 3]})
         assert ex.processed == []
+
+
+class TestAtomicDeploy:
+    """Package-as-SSoT: pip install updates behavior atomically across wikis."""
+
+    def test_load_modes_defaults_to_package(self):
+        """`load_modes()` with no args loads the package-shipped modes.yml —
+        so wiki repos get new modes on pip upgrade without a sync step."""
+        from pangolin.modes import load_modes
+        m = load_modes()
+        assert "software" in m and "research" in m
+
+    def test_resolve_config_prefers_wiki_override(self, tmp_path, monkeypatch):
+        """When the wiki repo contains a same-named file, it wins."""
+        from pangolin import paths as pp
+        monkeypatch.setattr("pangolin.core.REPO", tmp_path)
+        (tmp_path / "docs").mkdir()
+        override = tmp_path / "docs" / "writing-agent.md"
+        override.write_text("custom writing ssot")
+        assert pp.resolve_config("docs/writing-agent.md") == override
+
+    def test_resolve_config_falls_back_to_package(self, tmp_path, monkeypatch):
+        """When the wiki has no override, the package default is returned."""
+        from pangolin import paths as pp
+        monkeypatch.setattr("pangolin.core.REPO", tmp_path)
+        resolved = pp.resolve_config("docs/writing-agent.md")
+        assert "default_config" in str(resolved)
+        assert resolved.exists()
+
+    def test_modes_override_yml_deep_merges(self, tmp_path, monkeypatch):
+        """modes.override.yml patches specific fields without forking the whole file."""
+        from pangolin.modes import load_modes
+        monkeypatch.setattr("pangolin.core.REPO", tmp_path)
+        (tmp_path / "modes.override.yml").write_text(
+            "modes:\n  software:\n    model: claude-haiku-4-5-20251001\n"
+        )
+        m = load_modes()
+        assert m["software"].model == "claude-haiku-4-5-20251001"
+        # Other fields preserved from package default
+        assert m["software"].execution == "container"
+        # Other modes untouched
+        assert m["research"].trust_level == "untrusted"
 
 
 class TestSfrStruct4Inference:

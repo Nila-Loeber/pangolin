@@ -15,14 +15,16 @@ The `tests/test_security.py` suite is the single source of truth for the securit
 ## Layout
 
 - `src/pangolin/` — package code
-  - `cli.py` — `pangolin init|run|version` entry
+  - `cli.py` — `pangolin init|run|harden-egress|version` entry
   - `orchestrate.py` — cycle pipeline, `CycleRunner`, container spawn, gh integration, proxy sidecar lifecycle
   - `tools.py` — `ToolExecutor`, FS scope enforcement (API-key fallback path uses `pangolin-agent-bash` for sandboxed `Bash`)
   - `modes.py` — modes.yml loader + invariant validator + JSON schemas for direct-mode agents
   - `providers.py` — anthropic SDK wrapper (in-process API-key path)
   - `software.py` — software-task-per-cycle pickup (OAuth → `pangolin-agent-software` via CLI, or API-key → in-process SDK)
   - `scaffold.py` — `pangolin init` implementation
-  - `default_config/` — files copied into wiki repos by `init`
+  - `default_config/` — runtime SSoT for modes/docs/validator/workflow shim.
+    Loaded via `paths.resolve_config()`; only the workflow shim + wiki
+    seed files are copied into new wiki repos by `init`.
 - `tests/test_security.py` — the security regression suite (SFR-* tagged)
 - `Containerfile.bash` → `pangolin-agent-bash` (Python+bash, no network — used by tools.py for the API-key fallback)
 - `Containerfile.llm` → `pangolin-agent-llm` (Node+claude-CLI, no bash — default for all non-software modes under OAuth)
@@ -89,10 +91,24 @@ End-to-end requires real GH + Anthropic:
 - Remotes are HTTPS
 - `ANTHROPIC_API_KEY` unset (we use OAuth; API-key fallback path is exercised only if you explicitly set it)
 
-## Don't-touch areas (single-source-of-truth)
+## Atomic deploy (package is SSoT)
 
-- Anything in `default_config/` is the template shipped via `init`. Changes propagate to every new wiki on `pangolin init`.
-- `test-pangolin/` has its own copies (doesn't auto-update on package upgrade). If you change `default_config/workflows/agent-cycle.yml`, `default_config/modes.yml`, or `default_config/docs/*.md`, also update the copy in `test-pangolin/` for the canary to stay in sync.
+Behavior lives in the pip package, not in the wiki repo. Wiki repos only
+check in the thin workflow shim + user content. `pip install pangolin@X`
+at cycle start is the deploy mechanism — bumping the pinned ref in the
+shim (or leaving it on `@main`) updates every wiki atomically.
+
+- `modes.yml`, `docs/*-agent.md`, `validate_output.sh`, `workflows/agent-cycle.yml`:
+  live in `src/pangolin/default_config/` and are loaded at runtime via
+  `paths.resolve_config(<relpath>)`.
+- Wiki override mechanism: drop a same-named file at the same relative
+  path in the wiki repo — it wins over the package default.
+  - `<wiki>/modes.override.yml` → deep-merged into package `modes.yml`
+    (per-mode field replacement, absent modes unchanged).
+  - `<wiki>/docs/<name>.md` → replaces that specific ssot doc.
+- `test-pangolin/` only holds the workflow shim + its own wiki content.
+  After a package change, the canary updates on the next `workflow_dispatch`;
+  no manual sync.
 
 ## BACKLOG.md
 
@@ -103,9 +119,13 @@ Canonical pre-GA list. Check it before inventing work. Current high-level items:
 3. Generalize nlkw's wiki conventions
 
 Done (moved out of BACKLOG):
+- Atomic deploy — package is SSoT; wiki repos only hold the workflow shim
+  + user content. `modes.yml` + `docs/*-agent.md` loaded from the installed
+  package via `paths.resolve_config()`; wiki can override per-file.
+  `pangolin harden-egress` CLI subcommand moved iptables/proxy out of yml.
 - Self-hosted egress filter — `pangolin-egress-proxy` sidecar + iptables
-  bootstrap in `agent-cycle.yml` replaced `step-security/harden-runner`.
-  Per-mode `egress: tight|loose` field in `modes.yml` drives port selection.
+  replaced `step-security/harden-runner`. Per-mode `egress: tight|loose`
+  field in `modes.yml` drives port selection.
 - Agent container merge — decided to keep split (bash vs llm).
 
 Software-mode timeout on complex Opus code tasks is a known limitation — the tool-use iteration inherently exceeds 180s. Considered fixes: switch software to Sonnet (faster but lower quality); accept that owner re-opens to continue work.
