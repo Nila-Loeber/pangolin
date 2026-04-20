@@ -316,7 +316,7 @@ class TestMitmPhaseA:
         assert "anthropic_hosts" in cf
         # Strip global, inject for Anthropic.
         assert "request_header_access Authorization deny all" in cf
-        assert 'request_header_add Authorization "Bearer @@ANTHROPIC_TOKEN@@" anthropic_hosts' in cf
+        assert 'request_header_add Authorization "Bearer ${ANTHROPIC_TOKEN}" anthropic_hosts' in cf
         # CA generated at runtime, not committed.
         assert "openssl genrsa" in cf
         assert "envsubst" in cf

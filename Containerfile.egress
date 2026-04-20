@@ -31,9 +31,11 @@ RUN apk add --no-cache \
       ca-certificates \
       gettext=0.22.5-r0 \
       openssl=3.3.4-r0 \
-      squid=6.9-r0
+      squid=6.9-r0 \
+  && squid -v 2>&1 | grep -q -- '--enable-ssl-crtd' \
+  || (echo "FATAL: Alpine squid was built without --enable-ssl-crtd; ssl-bump needs a rebuild" >&2 && exit 1)
 
-# squid.conf template — @@ANTHROPIC_TOKEN@@ is substituted at container
+# squid.conf template — ${ANTHROPIC_TOKEN} is substituted at container
 # startup by envsubst. Config structure:
 #   - Two ports, two tiers (same as before)
 #   - tight port adds ssl-bump for Anthropic only
@@ -90,7 +92,7 @@ http_access deny all
 # The agent container has no access to $ANTHROPIC_TOKEN — it lives only
 # in this proxy's environment and is written into the config at startup.
 request_header_access Authorization deny all
-request_header_add Authorization "Bearer @@ANTHROPIC_TOKEN@@" anthropic_hosts
+request_header_add Authorization "Bearer ${ANTHROPIC_TOKEN}" anthropic_hosts
 
 cache deny all
 access_log stdio:/dev/stdout
