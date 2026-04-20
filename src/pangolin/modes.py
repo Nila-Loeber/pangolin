@@ -28,6 +28,7 @@ class Mode:
     container_runtime: str | None = None  # "runsc" for gVisor
     quarantine_output: str | None = None
     json_schema: str | None = None
+    egress: str = "tight"  # "tight" or "loose" — egress-proxy port selector
 
 
 # JSON schemas for direct-execution agents (triage, summary, self-improve)
@@ -324,6 +325,7 @@ def load_modes(path: Path) -> dict[str, Mode]:
             container_runtime=cfg.get("container_runtime"),
             quarantine_output=cfg.get("quarantine_output"),
             json_schema=cfg.get("json_schema"),
+            egress=cfg.get("egress", "tight"),
         )
     _validate_invariants(modes)
     return modes
@@ -341,3 +343,5 @@ def _validate_invariants(modes: dict[str, Mode]):
                 raise ValueError(f"Mode '{name}': untrusted mode must have quarantine_output")
         if m.execution == "direct" and m.allowed_tools:
             raise ValueError(f"Mode '{name}': direct execution must have empty allowed_tools")
+        if m.egress not in ("tight", "loose"):
+            raise ValueError(f"Mode '{name}': egress must be 'tight' or 'loose', got '{m.egress}'")

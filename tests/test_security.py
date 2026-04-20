@@ -131,9 +131,15 @@ class TestSfrFlm:
         assert "self-improve.md" in read(REPO/"src/pangolin/orchestrate.py")
 
 class TestHardening:
-    def test_harden_runner(self):
-        wf = REPO/"src/pangolin/default_config/workflows/agent-cycle.yml"
-        assert "harden-runner" in read(wf)
+    def test_egress_hardened(self):
+        """Runtime workflow enforces egress via the self-hosted proxy +
+        iptables bootstrap (replacing step-security/harden-runner)."""
+        wf = read(REPO/"src/pangolin/default_config/workflows/agent-cycle.yml")
+        assert "pangolin-egress-proxy" in wf
+        assert "iptables" in wf
+        assert "HTTPS_PROXY" in wf
+        # The replacement is complete — harden-runner is gone from the cycle.
+        assert "harden-runner" not in wf
     @pytest.mark.sfr("FLM.1")
     def test_iteration_limit(self):
         c = read(REPO/"src/pangolin/providers.py")
@@ -143,8 +149,21 @@ class TestModesConsistency:
     @pytest.mark.sfr("MODE.1")
     def test_required_fields(self):
         for n, m in modes().items():
-            for f in ("provider","model","execution","trust_level"):
+            for f in ("provider","model","execution","trust_level","egress"):
                 assert getattr(m, f), f"{n} missing {f}"
+    def test_egress_values(self):
+        """Every mode declares an egress tier and it must be tight|loose."""
+        for n, m in modes().items():
+            assert m.egress in ("tight", "loose"), f"{n} has egress={m.egress!r}"
+    def test_egress_invariant_enforced_at_load(self):
+        """modes.py rejects invalid egress values at load time."""
+        import tempfile
+        raw = yaml.safe_load((REPO/"modes.yml").read_text())
+        raw["modes"]["software"]["egress"] = "wide-open"
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+            yaml.dump(raw, f); f.flush()
+            with pytest.raises(ValueError, match="egress must be"):
+                load_modes(Path(f.name))
     @pytest.mark.sfr("TRIFECTA.5")
     def test_untrusted_have_quarantine(self):
         for n, m in modes().items():
