@@ -49,7 +49,19 @@ Two ports:
 - **3128 tight** — `api.anthropic.com`, `api.github.com`, `github.com`, `ghcr.io`, `pypi.org`, `files.pythonhosted.org`, `gvisor.dev`, `storage.googleapis.com`, `dl-cdn.alpinelinux.org`, `registry.npmjs.org`. Default for all modes.
 - **3129 loose** — any HTTPS host. Used **only** by research-search (WebFetch is client-side and needs arbitrary web reach).
 
-MITM (ssl-bump for token-injection + ICAP for request-body tool-allowlist) is a planned follow-up. See BACKLOG "MITM the egress proxy".
+MITM Phase A is live: the tight port ssl-bumps api.anthropic.com only
+(other tight hosts are spliced). At startup the proxy generates a runtime
+CA (rotates each cycle) and writes the public cert to a shared volume
+`pangolin-proxy-ca`, which every agent container mounts read-only at
+`/etc/pangolin/proxy-ca.crt`. `NODE_EXTRA_CA_CERTS=/etc/pangolin/proxy-ca.crt`
+(baked into Containerfile.llm + Containerfile.software) makes the claude
+CLI trust it. The real `CLAUDE_CODE_OAUTH_TOKEN` never enters an agent
+container — it rides into the proxy's env as `ANTHROPIC_TOKEN`, gets
+interpolated into `squid.conf` via envsubst, and squid strips any incoming
+Authorization header then injects `Bearer <token>` for anthropic_hosts.
+Agents receive a fixed placeholder token so the CLI doesn't short-circuit
+on empty credentials. Closes the `/proc/self/environ` + prompt-injected-Bash
+exfil path. Phase B (ICAP request-body tool-allowlist) is next on the BACKLOG.
 
 ## Direct (json-schema) modes — post-Q1
 
@@ -114,11 +126,15 @@ shim (or leaving it on `@main`) updates every wiki atomically.
 
 Canonical pre-GA list. Check it before inventing work. Current high-level items:
 
-1. MITM the egress proxy (ssl-bump for token injection + ICAP for tool-allowlist body filter)
+1. MITM Phase B — ICAP request-body policy against `api.anthropic.com`-as-exfil
+   (validate the tools list per calling mode; blocks attacker-supplied web_fetch)
 2. Image reproducibility (apk pin rot, digest-pinning)
 3. Generalize nlkw's wiki conventions
 
 Done (moved out of BACKLOG):
+- MITM Phase A — ssl-bump for api.anthropic.com, runtime CA in shared
+  volume, Authorization header stripped + re-injected server-side. Real
+  OAuth token no longer reaches any agent container.
 - Atomic deploy — package is SSoT; wiki repos only hold the workflow shim
   + user content. `modes.yml` + `docs/*-agent.md` loaded from the installed
   package via `paths.resolve_config()`; wiki can override per-file.

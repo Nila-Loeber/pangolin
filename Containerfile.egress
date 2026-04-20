@@ -1,25 +1,54 @@
 # Containerfile.egress — pangolin-egress-proxy
 #
-# Squid forward proxy with per-port hostname allowlists.
-# Two http_ports for two trust tiers:
-#   3128 — tight: only Anthropic + GitHub/PyPI/Alpine/etc. (default for all modes)
-#   3129 — loose: any HTTPS host (for research-search WebFetch only)
-# Hostname-aware via dstdomain — handles IP rotation that breaks pure iptables.
+# Squid forward proxy with two trust tiers + ssl-bump for api.anthropic.com.
+#
+# Ports:
+#   3128 tight — hostname allowlist (Anthropic+GitHub+PyPI+etc.), ssl-bump
+#                ONLY for api.anthropic.com so the proxy can inject the
+#                OAuth token. Everything else is spliced (TLS passthrough).
+#   3129 loose — any HTTPS host, no bump. Used only by research-search
+#                WebFetch (client-side reach for arbitrary web hosts).
+#
+# Phase A of the MITM plan (BACKLOG): the Authorization header is stripped
+# from any incoming request and re-injected server-side for Anthropic-bound
+# traffic. Token lives only in the proxy's env ($ANTHROPIC_TOKEN), never
+# in agent containers — defeats `/proc/self/environ` and prompt-injection
+# Bash-based exfil.
+#
+# CA material is generated at container startup (not committed) and the
+# public cert is written to /shared/proxy-ca.crt — the orchestrator mounts
+# that volume into agent containers as NODE_EXTRA_CA_CERTS so the claude
+# CLI trusts the bumped cert.
 
 FROM alpine@sha256:a4f4213abb84c497377b8544c81b3564f313746700372ec4fe84653e4fb03805
 
-# Pinned: squid 6.x on Alpine 3.20.
-# ca-certificates unpinned — trust-root bundle, see Containerfile.bash for rationale.
+# Pinned: squid 6.x on Alpine 3.20. Alpine's squid build includes
+# --enable-ssl-crtd so ssl-bump + security_file_certgen work out-of-box.
+# openssl for runtime CA generation; gettext provides envsubst for
+# interpolating the token into the config at startup.
+# ca-certificates unpinned — trust-root bundle, see Containerfile.bash.
 RUN apk add --no-cache \
       ca-certificates \
+      gettext=0.22.5-r0 \
+      openssl=3.3.4-r0 \
       squid=6.9-r0
 
-# squid.conf — cache disabled (pure forward proxy), logs to stdout/stderr so
-# `docker logs` surfaces them.
-RUN mkdir -p /etc/squid && cat > /etc/squid/squid.conf <<'EOF'
-# Two ports, two trust tiers.
-http_port 3128 name=tight
+# squid.conf template — @@ANTHROPIC_TOKEN@@ is substituted at container
+# startup by envsubst. Config structure:
+#   - Two ports, two tiers (same as before)
+#   - tight port adds ssl-bump for Anthropic only
+#   - Authorization header stripped globally, re-injected for Anthropic
+RUN mkdir -p /etc/squid && cat > /etc/squid/squid.conf.template <<'EOF'
+# Two ports, two trust tiers; tight additionally ssl-bumps Anthropic traffic.
+http_port 3128 name=tight ssl-bump \
+    cert=/etc/squid/ca/ca.crt \
+    key=/etc/squid/ca/ca.key \
+    generate-host-certificates=on \
+    dynamic_cert_mem_cache_size=4MB
 http_port 3129 name=loose
+
+sslcrtd_program /usr/lib/squid/security_file_certgen -s /var/lib/squid/ssl_db -M 4MB
+sslcrtd_children 5
 
 acl Safe_ports port 443
 acl CONNECT method CONNECT
@@ -28,8 +57,16 @@ acl SSL_ports port 443
 acl tight_port myportname tight
 acl loose_port myportname loose
 
-# Tight allowlist. dstdomain matches CONNECT target hostname (HTTPS) and
-# Host header (HTTP) — robust to IP rotation behind any of these names.
+# Bump-target: just api.anthropic.com. Everything else on tight is spliced.
+acl anthropic_hosts ssl::server_name api.anthropic.com
+
+acl step1 at_step SslBump1
+ssl_bump peek step1
+ssl_bump bump anthropic_hosts
+ssl_bump splice all
+
+# Tight allowlist (unchanged from Phase-0 proxy). dstdomain matches CONNECT
+# target hostname (HTTPS) and Host header (HTTP) — robust to IP rotation.
 acl tight_hosts dstdomain api.anthropic.com api.github.com github.com \
                           objects.githubusercontent.com codeload.github.com \
                           ghcr.io pkg-containers.githubusercontent.com \
@@ -41,28 +78,77 @@ acl tight_hosts dstdomain api.anthropic.com api.github.com github.com \
 http_access deny !Safe_ports
 http_access deny CONNECT !SSL_ports
 
-# Tight port: must match allowlist.
 http_access allow tight_port tight_hosts
 http_access deny tight_port
 
-# Loose port: any host on HTTPS. Caller (orchestrator) is responsible for
-# only routing modes here that actually need broad outbound (research-search).
 http_access allow loose_port
 
 http_access deny all
 
-# Forward proxy only — no caching layer.
-cache deny all
+# Strip any Authorization header from inbound agent requests. Then
+# re-inject the server-side token for Anthropic-bound requests only.
+# The agent container has no access to $ANTHROPIC_TOKEN — it lives only
+# in this proxy's environment and is written into the config at startup.
+request_header_access Authorization deny all
+request_header_add Authorization "Bearer @@ANTHROPIC_TOKEN@@" anthropic_hosts
 
-# Docker-friendly logging.
+cache deny all
 access_log stdio:/dev/stdout
 cache_log stderr
 pid_filename none
-
-# Drop debug noise.
 debug_options ALL,1
 EOF
 
-USER squid
+# Runtime entrypoint: generate CA on first boot, export public cert to
+# /shared/ (mounted by the orchestrator into agent containers), interpolate
+# the token, then exec squid.
+RUN cat > /usr/local/bin/start-proxy.sh <<'EOF'
+#!/bin/sh
+set -e
+
+CA_DIR=/etc/squid/ca
+SHARED_DIR=/shared
+SSL_DB=/var/lib/squid/ssl_db
+
+mkdir -p "$CA_DIR" "$SHARED_DIR"
+
+if [ ! -f "$CA_DIR/ca.key" ]; then
+    echo "[start-proxy] generating runtime CA (valid 1 day, rotated each cycle)"
+    openssl genrsa -out "$CA_DIR/ca.key" 2048 2>/dev/null
+    openssl req -x509 -new -nodes \
+        -key "$CA_DIR/ca.key" \
+        -days 1 \
+        -out "$CA_DIR/ca.crt" \
+        -subj "/CN=pangolin-egress-proxy" 2>/dev/null
+fi
+
+# Expose the public cert for agent containers (mounted read-only).
+cp "$CA_DIR/ca.crt" "$SHARED_DIR/proxy-ca.crt"
+chmod 644 "$SHARED_DIR/proxy-ca.crt"
+
+# Initialise squid's ssl_db for dynamic per-host cert generation.
+if [ ! -d "$SSL_DB/certs" ]; then
+    /usr/lib/squid/security_file_certgen -c -s "$SSL_DB" -M 4MB >/dev/null
+fi
+chown -R squid:squid "$SSL_DB" "$CA_DIR"
+
+if [ -z "$ANTHROPIC_TOKEN" ]; then
+    # Phase A still accepts empty token — the inject-Authorization acl
+    # only fires for api.anthropic.com; with no token the header simply
+    # isn't set and the agent-container call will 401. Explicit failure
+    # is fine for dev; in production the orchestrator guarantees a token.
+    echo "[start-proxy] WARNING: ANTHROPIC_TOKEN empty — Anthropic auth injection disabled"
+fi
+
+# Interpolate the token into the config.
+ANTHROPIC_TOKEN="${ANTHROPIC_TOKEN}" envsubst '$ANTHROPIC_TOKEN' \
+    < /etc/squid/squid.conf.template > /etc/squid/squid.conf
+
+exec squid -N -f /etc/squid/squid.conf
+EOF
+
+RUN chmod +x /usr/local/bin/start-proxy.sh
+
 EXPOSE 3128 3129
-CMD ["squid", "-N", "-f", "/etc/squid/squid.conf"]
+VOLUME /shared
+CMD ["/usr/local/bin/start-proxy.sh"]

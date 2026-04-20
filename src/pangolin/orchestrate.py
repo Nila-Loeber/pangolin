@@ -339,6 +339,15 @@ PROXY_NETWORK = os.environ.get("PANGOLIN_PROXY_NETWORK", "pangolin-net")
 PROXY_NAME = "pangolin-egress-proxy"
 PROXY_PORT_TIGHT = 3128
 PROXY_PORT_LOOSE = 3129
+# Shared volume: proxy writes its runtime CA public cert here; agent
+# containers mount this read-only so the claude CLI (via NODE_EXTRA_CA_CERTS)
+# trusts the bumped TLS cert presented for api.anthropic.com.
+PROXY_CA_VOLUME = "pangolin-proxy-ca"
+# Placeholder token shipped into agent containers — the proxy strips any
+# incoming Authorization header globally and re-injects the real OAuth
+# token for Anthropic-bound requests. Placeholder is non-empty so the
+# claude CLI doesn't short-circuit on an empty-credentials check.
+AGENT_PLACEHOLDER_TOKEN = "pangolin-proxy-injects-real-token"
 
 # Cached proxy container IP. Populated by _ensure_proxy_running(). Containers
 # are configured with HTTPS_PROXY pointing at this IP rather than the proxy's
@@ -349,7 +358,13 @@ _PROXY_IP: str | None = None
 
 def _ensure_proxy_running() -> None:
     """Start the egress proxy sidecar if not already up. Idempotent — safe
-    to call before every container spawn. Caches the proxy's IP for reuse."""
+    to call before every container spawn. Caches the proxy's IP for reuse.
+
+    MITM Phase A: the proxy receives `ANTHROPIC_TOKEN` in its env (sourced
+    from the host's `CLAUDE_CODE_OAUTH_TOKEN`) and ssl-bumps api.anthropic.com
+    traffic to inject the Authorization header server-side. Agent containers
+    never see the real token.
+    """
     global _PROXY_IP
     if _PROXY_IP is not None:
         return
@@ -359,19 +374,30 @@ def _ensure_proxy_running() -> None:
         capture_output=True, text=True,
     )
     if PROXY_NAME not in result.stdout:
-        # Ensure user-defined network exists (proxy + agents share this net)
+        # Ensure user-defined network + shared CA volume exist.
         subprocess.run(
             ["docker", "network", "create", PROXY_NETWORK],
             capture_output=True,  # ignore "already exists"
         )
+        subprocess.run(
+            ["docker", "volume", "create", PROXY_CA_VOLUME],
+            capture_output=True,
+        )
         log(f"  starting egress proxy ({PROXY_IMAGE} on {PROXY_NETWORK})")
+        token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
         subprocess.run(
             ["docker", "run", "-d", "--rm",
              "--name", PROXY_NAME,
              "--network", PROXY_NETWORK,
+             "-v", f"{PROXY_CA_VOLUME}:/shared",
+             "-e", f"ANTHROPIC_TOKEN={token}",
              PROXY_IMAGE],
             check=True, capture_output=True,
         )
+        # Wait for the proxy to have written the CA file — agent containers
+        # mount this volume read-only and the claude CLI will fail if the
+        # cert isn't there yet.
+        _wait_for_proxy_ca(timeout=30)
     # Resolve and cache the proxy's IP.
     inspect = subprocess.run(
         ["docker", "inspect", PROXY_NAME, "--format",
@@ -382,6 +408,23 @@ def _ensure_proxy_running() -> None:
     if not _PROXY_IP:
         raise RuntimeError(f"failed to resolve {PROXY_NAME} IP from docker inspect")
     log(f"  egress proxy IP: {_PROXY_IP}")
+
+
+def _wait_for_proxy_ca(*, timeout: int) -> None:
+    """Block until the proxy has written its public CA cert to the shared volume."""
+    import time
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        check = subprocess.run(
+            ["docker", "exec", PROXY_NAME, "test", "-f", "/shared/proxy-ca.crt"],
+            capture_output=True,
+        )
+        if check.returncode == 0:
+            return
+        time.sleep(0.5)
+    raise RuntimeError(
+        f"proxy did not write /shared/proxy-ca.crt within {timeout}s — check `docker logs {PROXY_NAME}`"
+    )
 
 
 def _proxy_url(tier: str = "tight") -> str:
@@ -439,12 +482,18 @@ def _base_docker_flags(*, egress_tier: str = "tight") -> list[str]:
         "--pids-limit", CONTAINER_PIDS_LIMIT,
         "--memory", CONTAINER_MEMORY,
         "--cpus", CONTAINER_CPUS,
-        "-e", "CLAUDE_CODE_OAUTH_TOKEN",
+        # Phase A: the real OAuth token stays on the host (→ proxy env).
+        # Agents get a placeholder; proxy strips Authorization globally and
+        # injects the real Bearer header for Anthropic-bound requests.
+        "-e", f"CLAUDE_CODE_OAUTH_TOKEN={AGENT_PLACEHOLDER_TOKEN}",
         "-e", "HOME=/home/agent",
         "-e", f"HTTPS_PROXY={proxy_url}",
         "-e", f"HTTP_PROXY={proxy_url}",
         "-e", f"https_proxy={proxy_url}",
         "-e", f"http_proxy={proxy_url}",
+        # Mount the proxy's runtime CA read-only so NODE_EXTRA_CA_CERTS
+        # (set in Containerfile.llm / Containerfile.software) resolves.
+        "-v", f"{PROXY_CA_VOLUME}:/etc/pangolin:ro",
         "-w", "/work",
     ]
 

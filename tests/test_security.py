@@ -269,6 +269,59 @@ class TestSfrStruct4:
         assert ex.processed == []
 
 
+class TestMitmPhaseA:
+    """MITM Phase A: real OAuth token lives only in the egress proxy.
+    Agent containers get a placeholder and a proxy-CA mount so the claude
+    CLI trusts the ssl-bumped cert for api.anthropic.com."""
+
+    def test_agent_env_has_placeholder_not_real_token(self):
+        """_base_docker_flags injects a placeholder into the agent container.
+        The real CLAUDE_CODE_OAUTH_TOKEN only travels host → proxy env."""
+        from pangolin.orchestrate import AGENT_PLACEHOLDER_TOKEN, _base_docker_flags
+        # _base_docker_flags needs _PROXY_IP cached; patch it.
+        import pangolin.orchestrate as O
+        O._PROXY_IP = "10.0.0.99"
+        flags = _base_docker_flags()
+        joined = " ".join(flags)
+        assert f"CLAUDE_CODE_OAUTH_TOKEN={AGENT_PLACEHOLDER_TOKEN}" in joined
+        # The value is the fixed placeholder, not a read-from-host variable.
+        # Regression guard: the old `-e CLAUDE_CODE_OAUTH_TOKEN` (no `=`)
+        # would have leaked the real token into the container.
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in flags  # bare var-name pass-through
+        O._PROXY_IP = None
+
+    def test_agent_env_mounts_proxy_ca_readonly(self):
+        """Agent containers mount the shared CA volume at /etc/pangolin:ro
+        so NODE_EXTRA_CA_CERTS (baked into the image) resolves."""
+        from pangolin.orchestrate import PROXY_CA_VOLUME, _base_docker_flags
+        import pangolin.orchestrate as O
+        O._PROXY_IP = "10.0.0.99"
+        flags = _base_docker_flags()
+        joined = " ".join(flags)
+        assert f"{PROXY_CA_VOLUME}:/etc/pangolin:ro" in joined
+        O._PROXY_IP = None
+
+    def test_agent_images_set_node_extra_ca_certs(self):
+        """Containerfile.llm + Containerfile.software set NODE_EXTRA_CA_CERTS
+        pointing at the mount path."""
+        for cf in ("Containerfile.llm", "Containerfile.software"):
+            text = (REPO/cf).read_text()
+            assert "NODE_EXTRA_CA_CERTS=/etc/pangolin/proxy-ca.crt" in text, f"{cf} missing"
+
+    def test_egress_container_ssl_bumps_anthropic(self):
+        """Containerfile.egress configures squid ssl-bump for Anthropic only
+        and strips/re-injects the Authorization header."""
+        cf = (REPO/"Containerfile.egress").read_text()
+        assert "ssl-bump" in cf
+        assert "anthropic_hosts" in cf
+        # Strip global, inject for Anthropic.
+        assert "request_header_access Authorization deny all" in cf
+        assert 'request_header_add Authorization "Bearer @@ANTHROPIC_TOKEN@@" anthropic_hosts' in cf
+        # CA generated at runtime, not committed.
+        assert "openssl genrsa" in cf
+        assert "envsubst" in cf
+
+
 class TestAtomicDeploy:
     """Package-as-SSoT: pip install updates behavior atomically across wikis."""
 
