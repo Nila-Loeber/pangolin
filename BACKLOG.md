@@ -2,28 +2,6 @@
 
 ## Pre-GA
 
-- **MITM Phase B — ICAP request-body policy (tool-allowlist).**
-  Phase A (merged) closes the token-exfil vector by keeping
-  `CLAUDE_CODE_OAUTH_TOKEN` in the proxy only. Phase B closes the
-  `api.anthropic.com`-as-exfil vector:
-
-  A compromised agent can still POST to `/v1/messages` (inside the bumped
-  TLS tunnel) with an attacker-supplied `tools` array, e.g. `web_fetch` to
-  `attacker.com`. Anthropic server-side fulfills the fetch → data
-  exfiltrates through an allowlisted host.
-
-  Fix: small ICAP service (~100 LOC Python) hooked into squid's
-  `icap_service` for bumped traffic. Inspects the JSON body of each
-  `/v1/messages` request and validates that `tools` is a subset of the
-  per-mode permitted set (passed via a request header that the proxy
-  trusts, e.g. `X-Pangolin-Mode: software`). Rejects e.g. `web_fetch` from
-  software mode outright.
-
-  Cost: ~100 LOC Python ICAP server + `icap_service` block in squid.conf +
-  orchestrator sets `X-Pangolin-Mode` via `request_header_add` per mode.
-
-
-
 - **Image reproducibility.** Current setup pins apk versions in Containerfiles,
   but Alpine's apk repos are mutable — they keep only the *current* version per
   release branch, so pins rot whenever upstream rebuilds for a CVE. We already

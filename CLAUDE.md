@@ -61,7 +61,21 @@ interpolated into `squid.conf` via envsubst, and squid strips any incoming
 Authorization header then injects `Bearer <token>` for anthropic_hosts.
 Agents receive a fixed placeholder token so the CLI doesn't short-circuit
 on empty credentials. Closes the `/proc/self/environ` + prompt-injected-Bash
-exfil path. Phase B (ICAP request-body tool-allowlist) is next on the BACKLOG.
+exfil path.
+
+MITM Phase B is live: a small aiohttp reverse proxy
+(`src/pangolin/egress_inspector.py`, shipped into the egress image next to
+squid) sits between squid and api.anthropic.com. squid routes bumped
+Anthropic traffic to it via `cache_peer 127.0.0.1 parent 9000
+originserver` + `never_direct allow anthropic_bumped`. The inspector
+parses every `POST /v1/messages` body and rejects any tool entry with a
+`type` field — i.e. Anthropic's server-side tools (`web_fetch`,
+`web_search`, `code_execution`, ...) that a compromised agent could use
+to exfil data *through* api.anthropic.com to an attacker-chosen URL.
+Custom tools (`{name, description, input_schema}`) pass through. The
+allowlist (`SERVER_TOOL_ALLOWLIST`) starts empty — no pangolin mode
+needs server-side tools today; research phase 1 uses the CLI's
+client-side WebSearch/WebFetch, not the API's.
 
 ## Direct (json-schema) modes — post-Q1
 
@@ -126,12 +140,14 @@ shim (or leaving it on `@main`) updates every wiki atomically.
 
 Canonical pre-GA list. Check it before inventing work. Current high-level items:
 
-1. MITM Phase B — ICAP request-body policy against `api.anthropic.com`-as-exfil
-   (validate the tools list per calling mode; blocks attacker-supplied web_fetch)
-2. Image reproducibility (apk pin rot, digest-pinning)
-3. Generalize nlkw's wiki conventions
+1. Image reproducibility (apk pin rot, digest-pinning)
+2. Generalize nlkw's wiki conventions
 
 Done (moved out of BACKLOG):
+- MITM Phase B — aiohttp reverse-proxy (`egress_inspector.py`) validates
+  `/v1/messages` request bodies; rejects server-side tool types
+  (web_fetch, web_search, code_execution, ...). Closes the
+  `api.anthropic.com`-as-exfil vector.
 - MITM Phase A — ssl-bump for api.anthropic.com, runtime CA in shared
   volume, Authorization header stripped + re-injected server-side. Real
   OAuth token no longer reaches any agent container.

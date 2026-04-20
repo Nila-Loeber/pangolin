@@ -316,10 +316,40 @@ class TestMitmPhaseA:
         assert "anthropic_hosts" in cf
         # Strip global, inject for Anthropic.
         assert "request_header_access Authorization deny all" in cf
-        assert 'request_header_add Authorization "Bearer ${ANTHROPIC_TOKEN}" anthropic_hosts' in cf
+        assert 'request_header_add Authorization "Bearer ${ANTHROPIC_TOKEN}" anthropic_bumped' in cf
         # CA generated at runtime, not committed.
         assert "openssl genrsa" in cf
         assert "envsubst" in cf
+
+
+class TestMitmPhaseB:
+    """Phase B: inspector.py blocks server-side-tool exfil via api.anthropic.com."""
+
+    def test_inspector_module_present(self):
+        """Inspector ships as a standalone module in the package."""
+        inspector = REPO / "src/pangolin/egress_inspector.py"
+        assert inspector.exists()
+        code = inspector.read_text()
+        assert "def validate_body" in code
+        assert "SERVER_TOOL_ALLOWLIST" in code
+
+    def test_server_tool_allowlist_empty_by_default(self):
+        """No pangolin mode needs Anthropic's server-side tools — the
+        starting policy denies them all. Changing this set should trip a
+        review."""
+        from pangolin.egress_inspector import SERVER_TOOL_ALLOWLIST
+        assert SERVER_TOOL_ALLOWLIST == set()
+
+    def test_containerfile_wires_inspector_to_squid(self):
+        cf = (REPO/"Containerfile.egress").read_text()
+        # Inspector is shipped into the image.
+        assert "egress_inspector.py" in cf
+        assert "py3-aiohttp" in cf
+        # squid routes Anthropic-bumped traffic to it.
+        assert "cache_peer 127.0.0.1 parent 9000" in cf
+        assert "never_direct allow anthropic_bumped" in cf
+        # Startup spawns the inspector before squid.
+        assert "python3 /usr/local/bin/egress_inspector.py" in cf
 
 
 class TestAtomicDeploy:
