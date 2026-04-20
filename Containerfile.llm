@@ -29,6 +29,12 @@ RUN adduser -D -u 1000 -s /bin/sh agent
 USER agent
 WORKDIR /work
 
+# MITM Phase A: the egress proxy ssl-bumps Anthropic traffic so it can
+# inject the OAuth token server-side. The claude CLI (Node-SEA) honors
+# NODE_EXTRA_CA_CERTS to extend its trust bundle. The orchestrator mounts
+# the proxy's runtime-generated public cert at this path.
+ENV NODE_EXTRA_CA_CERTS=/etc/pangolin/proxy-ca.crt
+
 # No ENTRYPOINT — the orchestrator supplies the exact claude invocation
 # per agent call (with --output-format, --append-system-prompt, etc.).
 # Default CMD just confirms the binary is present.

@@ -37,5 +37,11 @@ USER agent
 WORKDIR /work
 ENV SHELL=/bin/bash
 
+# MITM Phase A: the egress proxy ssl-bumps Anthropic traffic so it can
+# inject the OAuth token server-side. The claude CLI (Node-SEA) honors
+# NODE_EXTRA_CA_CERTS to extend its trust bundle. The orchestrator mounts
+# the proxy's runtime-generated public cert at this path.
+ENV NODE_EXTRA_CA_CERTS=/etc/pangolin/proxy-ca.crt
+
 # No ENTRYPOINT — orchestrator supplies the exact claude invocation per call.
 CMD ["claude", "--version"]

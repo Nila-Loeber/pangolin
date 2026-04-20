@@ -2,33 +2,25 @@
 
 ## Pre-GA
 
-- **MITM the egress proxy (ssl-bump): close two attack vectors.**
-  Plain hostname-allowlist proxy still exposes two real exfil paths:
-  1. `CLAUDE_CODE_OAUTH_TOKEN` lives in agent-container env. Anything in the
-     container (incl. prompt-injected Bash via `/proc/self/environ`) reads
-     it.
-  2. **api.anthropic.com itself is an exfil channel.** A compromised agent
-     can `curl https://api.anthropic.com/v1/messages` with attacker-supplied
-     tools (`web_fetch` to attacker.com) — Anthropic dutifully fetches the
-     attacker URL server-side, attacker.com logs the exfil. Hostname
-     allowlist can't see this because it's all inside one allowed domain.
-  Fix in two phases:
-  - **Phase A (token-hiding via header-injection)**: squid ssl-bump
-    terminates TLS to api.anthropic.com, injects
-    `Authorization: Bearer $TOKEN` server-side, re-encrypts. Token lives
-    only in the proxy. Agent containers trust a proxy-CA cert (baked into
-    Containerfile.{llm,software}) and have no token in env.
-  - **Phase B (request-body policy via ICAP)**: small ICAP service
-    (~100 LOC Python) hooked into squid; inspects each `/v1/messages` body
-    and validates that the requested `tools` match the calling mode's
-    permitted set (e.g. software-mode rejected if it requests `web_fetch`).
-    Closes attacker-controlled-API-request exfil.
-  Pre-check before starting Phase A: verify claude CLI doesn't pin Anthropic
-  certs (test: set NODE_EXTRA_CA_CERTS to our proxy CA, check if CLI accepts
-  the MITM'd connection). If pinned, this whole item is moot.
-  Cost: ~30 LOC squid ssl-bump + CA-gen + 3-line CA-trust in agent
-  Containerfiles for Phase A; ~100 LOC ICAP service + squid icap_service
-  config for Phase B.
+- **MITM Phase B — ICAP request-body policy (tool-allowlist).**
+  Phase A (merged) closes the token-exfil vector by keeping
+  `CLAUDE_CODE_OAUTH_TOKEN` in the proxy only. Phase B closes the
+  `api.anthropic.com`-as-exfil vector:
+
+  A compromised agent can still POST to `/v1/messages` (inside the bumped
+  TLS tunnel) with an attacker-supplied `tools` array, e.g. `web_fetch` to
+  `attacker.com`. Anthropic server-side fulfills the fetch → data
+  exfiltrates through an allowlisted host.
+
+  Fix: small ICAP service (~100 LOC Python) hooked into squid's
+  `icap_service` for bumped traffic. Inspects the JSON body of each
+  `/v1/messages` request and validates that `tools` is a subset of the
+  per-mode permitted set (passed via a request header that the proxy
+  trusts, e.g. `X-Pangolin-Mode: software`). Rejects e.g. `web_fetch` from
+  software mode outright.
+
+  Cost: ~100 LOC Python ICAP server + `icap_service` block in squid.conf +
+  orchestrator sets `X-Pangolin-Mode` via `request_header_add` per mode.
 
 
 
