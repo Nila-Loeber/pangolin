@@ -1,8 +1,14 @@
 name: build-agent-images
 
-# Builds the two agent images and pushes them to GHCR:
-#   pangolin-agent-bash — Python+bash runtime, no network. Hosts Bash tool calls.
-#   pangolin-agent-llm  — Node+claude-CLI runtime, network to api.anthropic.com only.
+# Builds the agent + infra images and pushes them to GHCR:
+#   pangolin-agent-bash     — Python+bash, no network. Bash tool sandbox
+#                             for the in-process SDK / API-key fallback path.
+#   pangolin-agent-llm      — Node + claude CLI, no bash. Default agent image
+#                             for all non-software modes (OAuth path).
+#   pangolin-agent-software — Node + claude CLI + bash. Used only by the
+#                             software mode under the OAuth path.
+#   pangolin-egress-proxy   — Squid forward proxy with per-port hostname
+#                             allowlists. Sidecar required by all agent calls.
 # Runs on Containerfile changes or manual dispatch.
 # Decouples build-time egress surface (npm, Alpine, Docker Hub) from the
 # runtime workflows — those only need api.anthropic.com + ghcr.io.
@@ -13,6 +19,8 @@ on:
     paths:
       - Containerfile.bash
       - Containerfile.llm
+      - Containerfile.software
+      - Containerfile.egress
       - .github/workflows/build-agent-images.yml
   workflow_dispatch: {}
 
@@ -83,3 +91,27 @@ jobs:
             ghcr.io/${{ env.OWNER_LC }}/pangolin-agent-llm:${{ github.sha }}
           cache-from: type=gha,scope=pangolin-agent-llm
           cache-to: type=gha,scope=pangolin-agent-llm,mode=max
+
+      - name: Build + push pangolin-agent-software
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Containerfile.software
+          push: true
+          tags: |
+            ghcr.io/${{ env.OWNER_LC }}/pangolin-agent-software:latest
+            ghcr.io/${{ env.OWNER_LC }}/pangolin-agent-software:${{ github.sha }}
+          cache-from: type=gha,scope=pangolin-agent-software
+          cache-to: type=gha,scope=pangolin-agent-software,mode=max
+
+      - name: Build + push pangolin-egress-proxy
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Containerfile.egress
+          push: true
+          tags: |
+            ghcr.io/${{ env.OWNER_LC }}/pangolin-egress-proxy:latest
+            ghcr.io/${{ env.OWNER_LC }}/pangolin-egress-proxy:${{ github.sha }}
+          cache-from: type=gha,scope=pangolin-egress-proxy
+          cache-to: type=gha,scope=pangolin-egress-proxy,mode=max
