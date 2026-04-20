@@ -20,19 +20,33 @@
   - Drop `step-security/harden-runner` from the two workflows
   - Publish `pangolin-egress-proxy` from build-agent-images workflow
 
-- **Move OAuth token out of agent containers via proxy header-injection
-  (ssl-bump).** Today `orchestrate.spawn_agent_container_*` passes
-  `CLAUDE_CODE_OAUTH_TOKEN` into each agent container as env. Anything in the
-  container (incl. prompt-injected Bash via `/proc/self/environ`) can read it.
-  Fix: squid ssl-bump on the egress proxy terminates TLS to api.anthropic.com,
-  injects `Authorization: Bearer $TOKEN` server-side, re-encrypts. Token lives
-  only in the proxy. Agent containers trust a proxy-CA cert (baked into
-  Containerfile.{llm,software}) and have no token in env.
-  Gain: prompt-injection can't exfiltrate credentials even if egress is
-  somehow bypassed — there's nothing to exfiltrate.
-  Cost: ~30 LOC squid.conf additions; CA generation script; 3-line CA-trust
-  block in agent Containerfiles; cert-lifecycle doc.
-  Do this right after plain-proxy integration is verified end-to-end.
+- **MITM the egress proxy (ssl-bump): close two attack vectors.**
+  Plain hostname-allowlist proxy still exposes two real exfil paths:
+  1. `CLAUDE_CODE_OAUTH_TOKEN` lives in agent-container env. Anything in the
+     container (incl. prompt-injected Bash via `/proc/self/environ`) reads
+     it.
+  2. **api.anthropic.com itself is an exfil channel.** A compromised agent
+     can `curl https://api.anthropic.com/v1/messages` with attacker-supplied
+     tools (`web_fetch` to attacker.com) — Anthropic dutifully fetches the
+     attacker URL server-side, attacker.com logs the exfil. Hostname
+     allowlist can't see this because it's all inside one allowed domain.
+  Fix in two phases:
+  - **Phase A (token-hiding via header-injection)**: squid ssl-bump
+    terminates TLS to api.anthropic.com, injects
+    `Authorization: Bearer $TOKEN` server-side, re-encrypts. Token lives
+    only in the proxy. Agent containers trust a proxy-CA cert (baked into
+    Containerfile.{llm,software}) and have no token in env.
+  - **Phase B (request-body policy via ICAP)**: small ICAP service
+    (~100 LOC Python) hooked into squid; inspects each `/v1/messages` body
+    and validates that the requested `tools` match the calling mode's
+    permitted set (e.g. software-mode rejected if it requests `web_fetch`).
+    Closes attacker-controlled-API-request exfil.
+  Pre-check before starting Phase A: verify claude CLI doesn't pin Anthropic
+  certs (test: set NODE_EXTRA_CA_CERTS to our proxy CA, check if CLI accepts
+  the MITM'd connection). If pinned, this whole item is moot.
+  Cost: ~30 LOC squid ssl-bump + CA-gen + 3-line CA-trust in agent
+  Containerfiles for Phase A; ~100 LOC ICAP service + squid icap_service
+  config for Phase B.
 
 
 
