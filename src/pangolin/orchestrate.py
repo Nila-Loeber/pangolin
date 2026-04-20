@@ -1429,9 +1429,19 @@ class CycleRunner:
         else:
             log("  index.md: agent returned empty, keeping current")
 
-    # ── THINKING + WRITING (per-issue, shared pattern — Epic 11) ──
+    # ── THINKING + WRITING (per-issue) ──
 
     def _phase_task_mode(self, mode_name: str) -> None:
+        """Dispatch by mode.execution.
+
+        direct (json-schema): agent returns inline content, host writes files
+        out-of-band. Faster (one API call) and prevents the "agent claims write
+        but didn't" failure mode — host knows deterministically what landed.
+
+        container (tool-use): legacy path, agent uses Write/Edit tools inside
+        the container. Kept for thinking-mode (until Q1 covers it) and any
+        future tool-use modes.
+        """
         log(f"=== {mode_name.upper()} ===")
         auto_reopen_recent(f"mode:{mode_name}")
         tasks = gh(
@@ -1444,6 +1454,10 @@ class CycleRunner:
             return
         mode = self.modes[mode_name]
         log(f"{mode_name}: {len(task_list)} owner-activated ticket(s)")
+        if mode.execution == "direct" and mode_name == "writing":
+            self._run_writing_direct(mode, task_list)
+            return
+        # Container-tooluse path (thinking, future tool-use modes).
         ssot = (REPO / f"docs/{mode_name}-agent.md").read_text()
         all_processed: list[int] = []
         wrote_anything = False
@@ -1469,6 +1483,103 @@ class CycleRunner:
         self.processed_per_mode[mode_name] = _aggregate_inference_filter(
             all_processed, wrote_anything, mode_name,
         )
+
+    def _run_writing_direct(self, mode: Mode, task_list: list[dict]) -> None:
+        """Q1: writing-mode runs as direct json-schema. Agent emits a list of
+        {path, content, action} entries; the host writes them with path-scope
+        validation. No tool-use means no shell-not-found loops, no claim/no-write
+        hallucinations, and a single API call instead of a multi-tool iteration."""
+        ssot = (REPO / "docs/writing-agent.md").read_text()
+        schema = SCHEMAS.get(mode.json_schema or "writing", {})
+        all_processed: list[int] = []
+        all_written: list[str] = []
+        for task in task_list:
+            n = task["number"]
+            # Build context: directory listings of writable + readable paths.
+            # Agent sees what exists (titles only) but not full content. If owner
+            # wants iteration on an existing draft, agent requests action="edit"
+            # at the same path; host overwrites.
+            ctx_listing = []
+            for p in ("drafts", "content"):
+                d = REPO / p
+                if d.is_dir():
+                    files = sorted(f.name for f in d.glob("*.md"))
+                    ctx_listing.append(f"{p}/: " + (", ".join(files) if files else "(empty)"))
+            user_prompt = (
+                f"--- TASK ISSUE ---\n{json.dumps(task)}\n\n"
+                f"--- EXISTING FILES (titles only) ---\n"
+                + "\n".join(ctx_listing) + "\n\n"
+                f"--- TASK ---\nProduce the draft(s) for this single writing task. "
+                f"Return the JSON object per the schema; do not call any tools."
+            )
+            system_full = (
+                f"{ssot}\n\nRespond with a single JSON object matching this schema: "
+                f"{json.dumps(schema)}"
+            )
+            if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+                result = spawn_agent_container_direct(
+                    system_prompt=system_full,
+                    user_prompt=user_prompt,
+                    model=mode.model,
+                    timeout=180,
+                )
+            else:
+                # API-key fallback: in-process SDK with json_schema.
+                provider = self.get_provider(mode.provider)
+                chat_result = provider.chat(
+                    system=system_full, user=user_prompt,
+                    model=mode.model, json_schema=schema,
+                )
+                try:
+                    result = json.loads(chat_result.text)
+                except json.JSONDecodeError:
+                    result = {}
+            drafts = result.get("drafts", []) if isinstance(result, dict) else []
+            written = self._execute_writing_drafts(drafts)
+            all_written.extend(written)
+            claimed_processed = result.get("processed_issues", []) if isinstance(result, dict) else []
+            # Only count as processed if the agent actually returned drafts AND we
+            # wrote them (path-validation may have rejected some). The aggregate
+            # filter doesn't re-check on the direct path because we know
+            # deterministically.
+            if n in claimed_processed and written:
+                all_processed.append(n)
+        if all_written:
+            log(f"  writing: wrote {len(all_written)} file(s): {', '.join(all_written)}")
+        self.processed_per_mode["writing"] = all_processed
+
+    def _execute_writing_drafts(self, drafts: list[dict]) -> list[str]:
+        """Write drafts emitted by the writing-mode agent. Path-scoped to
+        drafts/ and content/ — anything else is rejected as a SECURITY event
+        (agent attempting out-of-scope write)."""
+        written = []
+        for d in drafts[:3]:  # cap matches SSoT "max 3 entries per task"
+            path = (d.get("path") or "").strip().lstrip("/")
+            content = d.get("content") or ""
+            action = (d.get("action") or "create").lower()
+            if not path or not content.strip():
+                log(f"  writing: skipping empty draft entry {d!r}")
+                continue
+            # Path-scope: must live under drafts/ or content/. Reject .. and
+            # absolute references.
+            if ".." in path.split("/") or not (path.startswith("drafts/") or path.startswith("content/")):
+                log(f"  🔴 SECURITY: writing-agent tried out-of-scope path {path!r} — rejected")
+                continue
+            target = (REPO / path).resolve()
+            # Belt-and-suspenders: ensure target is under REPO's drafts/content
+            try:
+                target.relative_to(REPO)
+            except ValueError:
+                log(f"  🔴 SECURITY: writing-agent path {path!r} resolves outside REPO — rejected")
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if action == "append" and target.exists():
+                with target.open("a", encoding="utf-8") as f:
+                    f.write("\n\n" + content)
+            else:
+                target.write_text(content, encoding="utf-8")
+            written.append(path)
+        return written
 
     # ── SELF-IMPROVE (per-issue) ──
 

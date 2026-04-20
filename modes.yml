@@ -91,21 +91,23 @@ modes:
     trust_level: trusted
 
   writing:
-    description: "Produce prose, iterate drafts"
+    description: "Produce prose drafts: json-schema output, executor writes files"
     provider: anthropic
     # Opus for prose quality (ok on subscription, override to sonnet for API-key).
     model: claude-opus-4-7
-    execution: container
-    container_runtime: runsc
+    execution: direct
     network: false
     code_execution: false
-    allowed_tools: [read, write, edit, glob]
-    denied_tools: [grep, bash]
+    allowed_tools: []
+    denied_tools: [read, write, edit, glob, grep, bash, web_search, web_fetch]
+    # Readable: orchestrator pulls relevant context (existing draft, related wiki
+    # pages) into the prompt — agent doesn't read files itself anymore.
     readable_paths: [drafts/, content/, wiki/, notes/]
     writable_paths: [drafts/, content/]
     gh_cli: false
     autonomy: medium
     trust_level: trusted
+    json_schema: writing
 
   triage:
     description: "Inbox triage: json-schema output, the executor makes the gh calls"

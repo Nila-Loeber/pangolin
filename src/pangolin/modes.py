@@ -93,6 +93,50 @@ SCHEMAS = {
         },
         "required": ["index_md"],
     },
+    "writing": {
+        "type": "object",
+        "properties": {
+            "drafts": {
+                "type": "array",
+                "description": "Files the writing agent wants to create or edit.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Relative path under drafts/ or content/.",
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "Full file content. For action=edit/append the host overwrites/appends.",
+                        },
+                        "action": {
+                            "type": "string",
+                            "description": "create | edit | append. Defaults to create.",
+                        },
+                    },
+                    "required": ["path", "content"],
+                },
+            },
+            "processed_issues": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "Issue numbers fully handled in this run.",
+            },
+            "skipped": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "issue": {"type": "integer"},
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["issue", "reason"],
+                },
+            },
+        },
+        "required": ["drafts", "processed_issues"],
+    },
     "research": {
         "type": "object",
         "properties": {
