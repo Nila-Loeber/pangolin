@@ -1,0 +1,68 @@
+# Containerfile.egress — pangolin-egress-proxy
+#
+# Squid forward proxy with per-port hostname allowlists.
+# Two http_ports for two trust tiers:
+#   3128 — tight: only Anthropic + GitHub/PyPI/Alpine/etc. (default for all modes)
+#   3129 — loose: any HTTPS host (for research-search WebFetch only)
+# Hostname-aware via dstdomain — handles IP rotation that breaks pure iptables.
+
+FROM alpine@sha256:a4f4213abb84c497377b8544c81b3564f313746700372ec4fe84653e4fb03805
+
+# Pinned: squid 6.x on Alpine 3.20.
+# ca-certificates unpinned — trust-root bundle, see Containerfile.bash for rationale.
+RUN apk add --no-cache \
+      ca-certificates \
+      squid=6.9-r0
+
+# squid.conf — cache disabled (pure forward proxy), logs to stdout/stderr so
+# `docker logs` surfaces them.
+RUN mkdir -p /etc/squid && cat > /etc/squid/squid.conf <<'EOF'
+# Two ports, two trust tiers.
+http_port 3128 name=tight
+http_port 3129 name=loose
+
+acl Safe_ports port 443
+acl CONNECT method CONNECT
+acl SSL_ports port 443
+
+acl tight_port myportname tight
+acl loose_port myportname loose
+
+# Tight allowlist. dstdomain matches CONNECT target hostname (HTTPS) and
+# Host header (HTTP) — robust to IP rotation behind any of these names.
+acl tight_hosts dstdomain api.anthropic.com api.github.com github.com \
+                          objects.githubusercontent.com codeload.github.com \
+                          ghcr.io pkg-containers.githubusercontent.com \
+                          pypi.org files.pythonhosted.org \
+                          gvisor.dev storage.googleapis.com \
+                          dl-cdn.alpinelinux.org \
+                          registry.npmjs.org
+
+http_access deny !Safe_ports
+http_access deny CONNECT !SSL_ports
+
+# Tight port: must match allowlist.
+http_access allow tight_port tight_hosts
+http_access deny tight_port
+
+# Loose port: any host on HTTPS. Caller (orchestrator) is responsible for
+# only routing modes here that actually need broad outbound (research-search).
+http_access allow loose_port
+
+http_access deny all
+
+# Forward proxy only — no caching layer.
+cache deny all
+
+# Docker-friendly logging.
+access_log stdio:/dev/stdout
+cache_log stderr
+pid_filename none
+
+# Drop debug noise.
+debug_options ALL,1
+EOF
+
+USER squid
+EXPOSE 3128 3129
+CMD ["squid", "-N", "-f", "/etc/squid/squid.conf"]
