@@ -26,23 +26,9 @@ jobs:
   cycle:
     runs-on: ubuntu-latest
     steps:
-      - name: Egress filtering
-        uses: step-security/harden-runner@v2
-        with:
-          egress-policy: block
-          # Runtime-only surface: Anthropic, GitHub, GHCR for agent images,
-          # PyPI for pangolin + its deps, gVisor's repo for runsc install.
-          allowed-endpoints: >
-            api.anthropic.com:443
-            api.github.com:443
-            github.com:443
-            objects.githubusercontent.com:443
-            codeload.github.com:443
-            pypi.org:443
-            files.pythonhosted.org:443
-            gvisor.dev:443
-            storage.googleapis.com:443
-            ghcr.io:443
+      # Egress filtering is self-hosted: the pangolin-egress-proxy sidecar
+      # (started below) enforces the hostname allowlist via squid dstdomain,
+      # and host iptables pins all outbound to that proxy (defense-in-depth).
 
       - uses: actions/checkout@v4
         with:
@@ -76,6 +62,52 @@ jobs:
         run: |
           git config user.name "cycle-agent"
           git config user.email "cycle-agent@users.noreply.github.com"
+
+      - name: Start egress proxy sidecar
+        # Bring the squid forward proxy up early so the iptables bootstrap
+        # step below can discover its IP. _ensure_proxy_running() in
+        # orchestrate.py is idempotent — it will see this container and
+        # reuse it instead of starting its own.
+        run: |
+          docker network create pangolin-net 2>/dev/null || true
+          docker run -d --rm \
+            --name pangolin-egress-proxy \
+            --network pangolin-net \
+            pangolin-egress-proxy:latest
+          # Give squid a moment to bind its sockets.
+          for i in 1 2 3 4 5; do
+            docker exec pangolin-egress-proxy sh -c 'nc -z 127.0.0.1 3128' 2>/dev/null && break
+            sleep 1
+          done
+
+      - name: Lock host egress to proxy (iptables bootstrap)
+        # Defense-in-depth: the proxy already enforces a hostname allowlist.
+        # This step ensures no host process can bypass it — host outbound to
+        # external IPs is REJECTed; only Docker-internal nets (where the
+        # proxy lives) and DNS are reachable. The proxy's own outbound goes
+        # through Docker's FORWARD chain, which is unaffected by these
+        # OUTPUT rules.
+        run: |
+          PROXY_IP=$(docker inspect pangolin-egress-proxy \
+            -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+          echo "proxy IP: $PROXY_IP"
+          sudo iptables -I OUTPUT 1 -m state --state ESTABLISHED,RELATED -j ACCEPT
+          sudo iptables -I OUTPUT 2 -o lo -j ACCEPT
+          # Docker bridge networks (172.16.0.0/12): covers default bridge
+          # and user-defined networks (pangolin-net). Proxy lives here.
+          sudo iptables -A OUTPUT -d 172.16.0.0/12 -j ACCEPT
+          # GH Actions runner-local (private net), link-local metadata.
+          sudo iptables -A OUTPUT -d 10.0.0.0/8 -j ACCEPT
+          sudo iptables -A OUTPUT -d 169.254.0.0/16 -j ACCEPT
+          # DNS for host `gh` + resolver use.
+          sudo iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
+          sudo iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
+          sudo iptables -A OUTPUT -j REJECT
+          # Route host processes (gh, pip if it runs, anthropic SDK in the
+          # API-key fallback path) through the proxy.
+          echo "HTTPS_PROXY=http://$PROXY_IP:3128" >> $GITHUB_ENV
+          echo "HTTP_PROXY=http://$PROXY_IP:3128" >> $GITHUB_ENV
+          echo "NO_PROXY=localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8" >> $GITHUB_ENV
 
       - name: Run cycle
         env:

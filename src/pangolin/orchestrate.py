@@ -873,6 +873,7 @@ def run_direct(
             system_prompt=system_full,
             user_prompt=user,
             model=mode.model,
+            egress_tier=mode.egress,
         )
     if provider is None:
         raise ValueError(f"run_direct[{mode.name}]: provider required for SDK fallback")
@@ -1276,9 +1277,9 @@ class CycleRunner:
                     user_prompt=summarise_prompt,
                     model=mode.model,
                     allowed_tools="",  # zero tools — model has no exfil mechanism
-                    # egress_tier defaults to "tight": api.anthropic.com only.
-                    # The CLI's API call is allowed; nothing else is. Combined
-                    # with allowed_tools="" the model literally cannot exfil.
+                    # research mode declares egress: tight (api.anthropic.com only).
+                    # Combined with allowed_tools="" the model has no exfil channel.
+                    egress_tier=mode.egress,
                     timeout=300,
                 )
                 findings = result.get("findings", [])
@@ -1390,6 +1391,7 @@ class CycleRunner:
                 system_prompt=system_full,
                 user_prompt=user_prompt,
                 model=mode.model,
+                egress_tier=mode.egress,
                 timeout=180,
             )
         else:
@@ -1481,7 +1483,7 @@ class CycleRunner:
         index_schema = SCHEMAS.get("wiki-index", {})
         # Wiki-index is a pure text-gen task (stateless, no tools). Reuse the
         # summary mode's model — same profile (cheap, deterministic formatting).
-        index_model = self.modes["summary"].model
+        summary_mode = self.modes["summary"]
         if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
             system_full = (
                 f"Respond with a single JSON object matching this schema: "
@@ -1490,7 +1492,8 @@ class CycleRunner:
             result = spawn_agent_container_direct(
                 system_prompt=system_full,
                 user_prompt=index_prompt,
-                model=index_model,
+                model=summary_mode.model,
+                egress_tier=summary_mode.egress,
                 timeout=120,
             )
         else:
@@ -1557,7 +1560,7 @@ class CycleRunner:
                 f"--- TASK ---\nProcess this single {mode_name} task."
             )
             if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
-                spawn_agent_container_tooluse(mode, ssot, prompt)
+                spawn_agent_container_tooluse(mode, ssot, prompt, egress_tier=mode.egress)
                 all_processed.append(n)
             else:
                 _chat, ex = run_container_agent(
@@ -1610,6 +1613,7 @@ class CycleRunner:
                     system_prompt=system_full,
                     user_prompt=user_prompt,
                     model=mode.model,
+                    egress_tier=mode.egress,
                     timeout=180,
                 )
             else:
@@ -1673,6 +1677,7 @@ class CycleRunner:
                     system_prompt=system_full,
                     user_prompt=user_prompt,
                     model=mode.model,
+                    egress_tier=mode.egress,
                     timeout=180,
                 )
             else:

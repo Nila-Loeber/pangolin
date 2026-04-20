@@ -28,6 +28,11 @@
 #                      direct for json-schema agents (no container needed)
 #   container_runtime: runsc — gVisor runtime for container Modes. Provides
 #                      userspace syscall interception (subsumes seccomp-bpf)
+#   egress:            tight|loose — which egress-proxy port this mode uses.
+#                      tight = Anthropic+GitHub+PyPI+etc. allowlist (default).
+#                      loose = any HTTPS (only for broad-outbound use cases;
+#                      no mode currently requires this — phase-1 search is
+#                      hardcoded in orchestrate.py and sets loose directly).
 
 modes:
 
@@ -46,6 +51,7 @@ modes:
     gh_cli: false
     autonomy: medium
     trust_level: trusted
+    egress: tight
 
   research:
     description: "Phase-2 summariser: receives search results (untrusted), returns structured findings JSON"
@@ -70,6 +76,7 @@ modes:
     trust_level: untrusted
     quarantine_output: wiki/fragment/
     json_schema: research
+    egress: tight
 
   thinking:
     description: "Analysis, synthesis, structuring, cross-links — json-schema output (also used by wiki-ingest phase)"
@@ -91,6 +98,7 @@ modes:
     autonomy: low
     trust_level: trusted
     json_schema: thinking
+    egress: tight
 
   writing:
     description: "Produce prose drafts: json-schema output, executor writes files"
@@ -110,6 +118,7 @@ modes:
     autonomy: medium
     trust_level: trusted
     json_schema: writing
+    egress: tight
 
   triage:
     description: "Inbox triage: json-schema output, the executor makes the gh calls"
@@ -126,6 +135,7 @@ modes:
     autonomy: medium
     trust_level: trusted
     json_schema: triage
+    egress: tight
 
   summary:
     description: "Cycle summary: json-schema output, the executor posts comments"
@@ -142,6 +152,7 @@ modes:
     autonomy: low
     trust_level: trusted
     json_schema: summary
+    egress: tight
 
   self-improve:
     description: "Self-reflection: json-schema output, the workflow writes the edited files"
@@ -158,3 +169,4 @@ modes:
     autonomy: low
     trust_level: trusted
     json_schema: self-improve
+    egress: tight

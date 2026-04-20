@@ -2,24 +2,6 @@
 
 ## Pre-GA
 
-- **Self-host the egress filter (drop StepSecurity Harden-Runner dependency).**
-  `step-security/harden-runner@v2` with `egress-policy: block` is free on
-  public repos but gated behind a paid StepSecurity plan on private repos.
-  Replacement: `pangolin-egress-proxy` (squid forward proxy, built) with two
-  ports — tight (Anthropic/GitHub/PyPI/etc. allowlist) and loose (any HTTPS,
-  used only by research-search WebFetch). All agent containers and the host
-  orchestrator route outbound through the proxy via `HTTPS_PROXY` env. Then
-  iptables on the host blocks direct outbound except to the proxy, as
-  defense-in-depth. Hostname-aware via `dstdomain` — robust to IP rotation.
-  No vendor dependency, works on private repos, no cost.
-
-  **Open sub-tasks:**
-  - Wire proxy sidecar into orchestrate.py (start before cycle, stop after)
-  - Per-mode `egress: tight|loose` field in modes.yml; orchestrator selects port
-  - Add iptables bootstrap step to workflow templates
-  - Drop `step-security/harden-runner` from the two workflows
-  - Publish `pangolin-egress-proxy` from build-agent-images workflow
-
 - **MITM the egress proxy (ssl-bump): close two attack vectors.**
   Plain hostname-allowlist proxy still exposes two real exfil paths:
   1. `CLAUDE_CODE_OAUTH_TOKEN` lives in agent-container env. Anything in the

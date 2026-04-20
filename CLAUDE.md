@@ -98,9 +98,14 @@ End-to-end requires real GH + Anthropic:
 
 Canonical pre-GA list. Check it before inventing work. Current high-level items:
 
-1. Egress filter self-hosting (partial — proxy done, iptables host-level step still pending; workflow templates still use Harden-Runner)
+1. MITM the egress proxy (ssl-bump for token injection + ICAP for tool-allowlist body filter)
 2. Image reproducibility (apk pin rot, digest-pinning)
-3. MITM the egress proxy (ssl-bump for token injection + ICAP for tool-allowlist body filter)
-4. Generalize nlkw's wiki conventions
+3. Generalize nlkw's wiki conventions
+
+Done (moved out of BACKLOG):
+- Self-hosted egress filter — `pangolin-egress-proxy` sidecar + iptables
+  bootstrap in `agent-cycle.yml` replaced `step-security/harden-runner`.
+  Per-mode `egress: tight|loose` field in `modes.yml` drives port selection.
+- Agent container merge — decided to keep split (bash vs llm).
 
 Software-mode timeout on complex Opus code tasks is a known limitation — the tool-use iteration inherently exceeds 180s. Considered fixes: switch software to Sonnet (faster but lower quality); accept that owner re-opens to continue work.
