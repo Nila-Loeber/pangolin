@@ -284,7 +284,7 @@ def precheck() -> bool:
 # the OS level. The host orchestrator only reads the returned JSON. No
 # Python stack inside the container, no claude-agent-sdk wrapping — just
 # `claude --print --output-format json`.
-AGENT_IMAGE = os.environ.get("PANGOLIN_AGENT_IMAGE", "pangolin-agent-epic8")
+AGENT_IMAGE = os.environ.get("PANGOLIN_AGENT_IMAGE", "pangolin-agent-llm")
 
 
 # Container resource budget for agent runs. Conservative defaults that work

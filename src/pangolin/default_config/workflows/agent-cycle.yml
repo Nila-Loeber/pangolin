@@ -64,10 +64,10 @@ jobs:
 
       - name: Pull pre-built agent images from GHCR
         run: |
-          docker pull ghcr.io/nila-loeber/pangolin-agent:latest
-          docker pull ghcr.io/nila-loeber/pangolin-agent-epic8:latest
-          docker tag ghcr.io/nila-loeber/pangolin-agent:latest pangolin-agent:latest
-          docker tag ghcr.io/nila-loeber/pangolin-agent-epic8:latest pangolin-agent-epic8:latest
+          docker pull ghcr.io/nila-loeber/pangolin-agent-bash:latest
+          docker pull ghcr.io/nila-loeber/pangolin-agent-llm:latest
+          docker tag ghcr.io/nila-loeber/pangolin-agent-bash:latest pangolin-agent-bash:latest
+          docker tag ghcr.io/nila-loeber/pangolin-agent-llm:latest pangolin-agent-llm:latest
 
       - name: Install pangolin
         run: pip install --quiet git+https://github.com/Nila-Loeber/pangolin.git@v0.1

@@ -21,7 +21,7 @@ from typing import Any
 from .providers import ToolResult
 
 
-CONTAINER_IMAGE = "pangolin-agent"
+CONTAINER_IMAGE = "pangolin-agent-bash"
 
 
 # Map modes.yml tool identifiers to Claude Code CLI tool names.
