@@ -829,7 +829,10 @@ captured_by: research-agent
     return rel
 
 
-def run_direct_agent(mode: Mode, prompt: str, provider, ssot: str = "") -> dict:
+def run_direct_agent(
+    mode: Mode, prompt: str, provider, ssot: str = "",
+    *, schema_name: str | None = None,
+) -> dict:
     """Run a json-schema agent (no tools, no container). Returns parsed JSON.
 
     Schema enforcement: Anthropic Structured Outputs (constrained decoding)
@@ -842,8 +845,11 @@ def run_direct_agent(mode: Mode, prompt: str, provider, ssot: str = "") -> dict:
     Going through `system` (rather than `prompt`) means it benefits from
     Anthropic prompt caching across per-issue calls — first call pays full
     SSoT cost, every subsequent call within the cache TTL pays ~10%.
+
+    `schema_name`: override the mode's default json_schema (used by the
+    pr-feedback classifier, see run_direct).
     """
-    schema = SCHEMAS.get(mode.json_schema, {})
+    schema = SCHEMAS.get(schema_name or mode.json_schema, {})
     system_parts = []
     if ssot:
         system_parts.append(ssot)
@@ -930,6 +936,7 @@ def run_direct(
     system: str,
     user: str,
     provider=None,
+    schema_name: str | None = None,
 ) -> dict:
     """Unified direct-agent runner: json-schema output, no tools, no side effects.
 
@@ -940,9 +947,13 @@ def run_direct(
     `provider` is required for the SDK fallback path. Callers that have a
     pre-cached provider (e.g. to benefit from prompt caching across a loop)
     should pass it explicitly.
+
+    `schema_name` lets a caller override the mode's default json_schema —
+    used by the pr-feedback classifier, which runs under the triage mode's
+    compute/model budget but with a different tiny schema.
     """
     if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
-        schema = SCHEMAS.get(mode.json_schema, {})
+        schema = SCHEMAS.get(schema_name or mode.json_schema, {})
         system_full = (
             f"{system}\n\n" if system else ""
         ) + f"Respond with a single JSON object matching this schema: {json.dumps(schema)}"
@@ -954,7 +965,7 @@ def run_direct(
         )
     if provider is None:
         raise ValueError(f"run_direct[{mode.name}]: provider required for SDK fallback")
-    return run_direct_agent(mode, user, provider, ssot=system)
+    return run_direct_agent(mode, user, provider, ssot=system, schema_name=schema_name)
 
 
 # ── Executors (side-effects) ──
@@ -1134,6 +1145,91 @@ def commit_and_pr(branch: str, ts: str) -> str | None:
         )
     log(f"PR: {pr_url}")
     return pr_url
+
+
+# ── Direct-mode write appliers (shared by cycle phases + pr-feedback) ──
+
+def apply_path_scoped_writes(
+    writes: list[dict],
+    *,
+    allowed_prefixes: tuple[str, ...],
+    forbidden: tuple[str, ...] = (),
+    tag: str = "agent",
+    max_writes: int = 10,
+) -> list[str]:
+    """Apply a list of {path, content, action} writes with path-scope
+    validation. Path-scope means the same thing the cycle thinking/wiki-ingest
+    handlers enforce: no traversal, no forbidden subpaths, must fall under
+    an allowed prefix, must resolve inside REPO. Violations are logged as
+    `🔴 SECURITY` events and rejected."""
+    written: list[str] = []
+    for w in writes[:max_writes]:
+        path = (w.get("path") or "").strip().lstrip("/")
+        content = w.get("content") or ""
+        action = (w.get("action") or "create").lower()
+        if not path or not content.strip():
+            log(f"  {tag}: skipping empty write entry {w!r}")
+            continue
+        if ".." in path.split("/"):
+            log(f"  🔴 SECURITY: {tag}-agent tried path-traversal {path!r} — rejected")
+            continue
+        if any(path == f or path.startswith(f) for f in forbidden):
+            log(f"  🔴 SECURITY: {tag}-agent tried forbidden path {path!r} — rejected")
+            continue
+        if not any(path.startswith(p) for p in allowed_prefixes):
+            log(f"  🔴 SECURITY: {tag}-agent tried out-of-scope path {path!r} — rejected")
+            continue
+        target = (REPO / path).resolve()
+        try:
+            target.relative_to(REPO)
+        except ValueError:
+            log(f"  🔴 SECURITY: {tag}-agent path {path!r} resolves outside REPO — rejected")
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if action == "append" and target.exists():
+            with target.open("a", encoding="utf-8") as f:
+                f.write("\n\n" + content)
+        else:
+            target.write_text(content, encoding="utf-8")
+        written.append(path)
+    return written
+
+
+def execute_writing_drafts(drafts: list[dict]) -> list[str]:
+    """Writing-mode's own applier — same shape as apply_path_scoped_writes
+    but with a lower max (3) to match the writing SSoT's "max 3 entries per
+    task" budget. Kept separate so the cap is explicit at the call site."""
+    return apply_path_scoped_writes(
+        drafts,
+        allowed_prefixes=("drafts/", "content/"),
+        tag="writing",
+        max_writes=3,
+    )
+
+
+def apply_writes_for_mode(mode: "Mode", writes: list[dict]) -> list[str]:
+    """Dispatch writes to the right path-scoped applier based on the mode's
+    schema. Used by pr-feedback (and reusable by anything else that needs
+    to route a mode's direct-json-schema output to disk)."""
+    schema = mode.json_schema or mode.name
+    if schema == "writing":
+        return execute_writing_drafts(writes)
+    if schema == "thinking":
+        # Matches CycleRunner._run_thinking_direct allowed scope.
+        return apply_path_scoped_writes(
+            writes,
+            allowed_prefixes=("wiki/", "notes/", "drafts/"),
+            forbidden=("wiki/fragment/", "wiki/SCHEMA.md"),
+            tag="thinking",
+        )
+    if schema == "wiki-ingest":
+        return apply_path_scoped_writes(
+            writes,
+            allowed_prefixes=("wiki/",),
+            forbidden=("wiki/fragment/", "wiki/SCHEMA.md"),
+            tag="wiki-ingest",
+        )
+    raise ValueError(f"apply_writes_for_mode: no write policy for schema={schema!r}")
 
 
 # ── Main cycle ──
@@ -1797,81 +1893,15 @@ class CycleRunner:
         self.processed_per_mode["thinking"] = all_processed
 
     def _apply_path_scoped_writes(
-        self,
-        writes: list[dict],
-        *,
-        allowed_prefixes: tuple[str, ...],
-        forbidden: tuple[str, ...] = (),
-        tag: str = "agent",
-        max_writes: int = 10,
+        self, writes: list[dict], *, allowed_prefixes, forbidden=(), tag="agent", max_writes=10,
     ) -> list[str]:
-        """Apply a list of {path, content, action} writes with path-scope
-        validation. Shared by thinking-direct, wiki-ingest-direct, and future
-        direct-mode handlers."""
-        written = []
-        for w in writes[:max_writes]:
-            path = (w.get("path") or "").strip().lstrip("/")
-            content = w.get("content") or ""
-            action = (w.get("action") or "create").lower()
-            if not path or not content.strip():
-                log(f"  {tag}: skipping empty write entry {w!r}")
-                continue
-            if ".." in path.split("/"):
-                log(f"  🔴 SECURITY: {tag}-agent tried path-traversal {path!r} — rejected")
-                continue
-            if any(path == f or path.startswith(f) for f in forbidden):
-                log(f"  🔴 SECURITY: {tag}-agent tried forbidden path {path!r} — rejected")
-                continue
-            if not any(path.startswith(p) for p in allowed_prefixes):
-                log(f"  🔴 SECURITY: {tag}-agent tried out-of-scope path {path!r} — rejected")
-                continue
-            target = (REPO / path).resolve()
-            try:
-                target.relative_to(REPO)
-            except ValueError:
-                log(f"  🔴 SECURITY: {tag}-agent path {path!r} resolves outside REPO — rejected")
-                continue
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if action == "append" and target.exists():
-                with target.open("a", encoding="utf-8") as f:
-                    f.write("\n\n" + content)
-            else:
-                target.write_text(content, encoding="utf-8")
-            written.append(path)
-        return written
+        return apply_path_scoped_writes(
+            writes, allowed_prefixes=allowed_prefixes, forbidden=forbidden,
+            tag=tag, max_writes=max_writes,
+        )
 
     def _execute_writing_drafts(self, drafts: list[dict]) -> list[str]:
-        """Write drafts emitted by the writing-mode agent. Path-scoped to
-        drafts/ and content/ — anything else is rejected as a SECURITY event
-        (agent attempting out-of-scope write)."""
-        written = []
-        for d in drafts[:3]:  # cap matches SSoT "max 3 entries per task"
-            path = (d.get("path") or "").strip().lstrip("/")
-            content = d.get("content") or ""
-            action = (d.get("action") or "create").lower()
-            if not path or not content.strip():
-                log(f"  writing: skipping empty draft entry {d!r}")
-                continue
-            # Path-scope: must live under drafts/ or content/. Reject .. and
-            # absolute references.
-            if ".." in path.split("/") or not (path.startswith("drafts/") or path.startswith("content/")):
-                log(f"  🔴 SECURITY: writing-agent tried out-of-scope path {path!r} — rejected")
-                continue
-            target = (REPO / path).resolve()
-            # Belt-and-suspenders: ensure target is under REPO's drafts/content
-            try:
-                target.relative_to(REPO)
-            except ValueError:
-                log(f"  🔴 SECURITY: writing-agent path {path!r} resolves outside REPO — rejected")
-                continue
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if action == "append" and target.exists():
-                with target.open("a", encoding="utf-8") as f:
-                    f.write("\n\n" + content)
-            else:
-                target.write_text(content, encoding="utf-8")
-            written.append(path)
-        return written
+        return execute_writing_drafts(drafts)
 
     # ── SELF-IMPROVE (per-issue) ──
 

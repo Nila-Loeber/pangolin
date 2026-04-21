@@ -263,6 +263,28 @@ SCHEMAS = {
         },
         "required": ["edits", "skipped", "processed_issues"],
     },
+    # Classifier for PR-feedback — given an owner comment body on a
+    # pangolin-authored PR, which mode should address it. Returns "none"
+    # if the comment isn't about an actionable change (acknowledgement,
+    # off-topic, etc.). Same spirit as inbox triage but simpler shape.
+    "pr-feedback-classify": {
+        "type": "object",
+        "properties": {
+            "mode": {
+                "type": "string",
+                "description": (
+                    "Which mode should address the comment: "
+                    "'software' for code/test/script changes, "
+                    "'writing' for prose drafts in drafts/ or content/, "
+                    "'thinking' for wiki synthesis + cross-links in wiki/ or notes/, "
+                    "'none' if no actionable change is requested."
+                ),
+                "enum": ["software", "writing", "thinking", "none"],
+            },
+            "reason": {"type": "string"},
+        },
+        "required": ["mode", "reason"],
+    },
 }
 
 
