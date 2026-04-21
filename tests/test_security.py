@@ -349,6 +349,17 @@ class TestMitmPhaseB:
         assert "_validate_messages_body" in code
         assert "SERVER_TOOL_ALLOWLIST" in code
 
+    def test_addon_splices_non_anthropic_tls(self):
+        """The addon must splice (TLS-tunnel, not MITM) every host except
+        api.anthropic.com. Bumping api.github.com et al. would break any
+        client that doesn't trust our runtime CA — e.g. the host `gh` CLI
+        in the workflow runner."""
+        code = (REPO / "src/pangolin/pangolin_egress.py").read_text()
+        assert "tls_clienthello" in code
+        assert "ignore_connection" in code
+        # Splice rule lives on SNI != api.anthropic.com
+        assert "ANTHROPIC_HOST" in code
+
     def test_server_tool_allowlist_empty_by_default(self):
         """No pangolin mode needs Anthropic's server-side tools — the
         starting policy denies them all. Changing this set should trip a

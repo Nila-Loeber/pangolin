@@ -32,7 +32,7 @@ import os
 import shutil
 from pathlib import Path
 
-from mitmproxy import http
+from mitmproxy import http, tls
 
 log = logging.getLogger("pangolin-egress")
 
@@ -103,14 +103,36 @@ class PangolinEgress:
         else:
             log.error("FATAL: %s missing — agent containers will fail TLS handshake", ca)
 
+    def tls_clienthello(self, data: tls.ClientHelloData) -> None:
+        """Decide MITM-bump vs TLS-splice per connection, by SNI + listener.
+
+        We only need to MITM api.anthropic.com (Phase A header injection +
+        Phase B body inspection). Every other host gets spliced (raw TLS
+        tunnel) so the client doesn't have to trust our runtime CA.
+
+        - loose port  → always splice (research-search WebFetch goes anywhere)
+        - tight port + SNI == api.anthropic.com → bump (default, no action)
+        - tight port + SNI in TIGHT_ALLOWLIST → splice
+        - tight port + SNI not in allowlist → fall through to MITM, gets
+          a 403 in request() (or TLS-fails on clients that don't trust our
+          CA — either way it's blocked)
+        """
+        local_port = data.context.client.sockname[1]
+        sni = data.client_hello.sni or ""
+
+        if local_port == LOOSE_PORT:
+            data.ignore_connection = True
+            return
+
+        if sni in TIGHT_ALLOWLIST and sni != ANTHROPIC_HOST:
+            data.ignore_connection = True
+
     def request(self, flow: http.HTTPFlow) -> None:
-        # Sockname is OUR side of the connection — which listener port the
-        # client hit. That's how we know the trust tier.
-        local_port = flow.client_conn.sockname[1]
+        """Only api.anthropic.com (and disallowed-host MITM survivors) reach
+        this hook — everything else was spliced in tls_clienthello."""
         host = flow.request.pretty_host
 
-        # Tight tier: hostname allowlist.
-        if local_port == TIGHT_PORT and host not in TIGHT_ALLOWLIST:
+        if host != ANTHROPIC_HOST:
             log.warning(
                 "BLOCK tight %s %s — host not in allowlist",
                 flow.request.method, flow.request.url,
@@ -118,31 +140,21 @@ class PangolinEgress:
             flow.response = _block(f"host {host!r} not in tight allowlist")
             return
 
-        # Authorization rewrite for anthropic-bound traffic on either port.
-        # Strip whatever the agent sent (placeholder), inject the real
-        # token from proxy env. Agent containers never see the real token.
-        if host == ANTHROPIC_HOST:
-            flow.request.headers.pop("Authorization", None)
-            if ANTHROPIC_TOKEN:
-                flow.request.headers["Authorization"] = f"Bearer {ANTHROPIC_TOKEN}"
+        # Authorization rewrite. Strip whatever the agent sent (placeholder),
+        # inject the real token from proxy env. Agent containers never see it.
+        flow.request.headers.pop("Authorization", None)
+        if ANTHROPIC_TOKEN:
+            flow.request.headers["Authorization"] = f"Bearer {ANTHROPIC_TOKEN}"
 
         # /v1/messages body inspection.
-        if host == ANTHROPIC_HOST and _is_messages_post(
-            flow.request.method, flow.request.path
-        ):
+        if _is_messages_post(flow.request.method, flow.request.path):
             ok, reason = _validate_messages_body(flow.request.content or b"")
             if not ok:
-                log.warning(
-                    "BLOCK %s — %s", flow.request.url, reason,
-                )
+                log.warning("BLOCK %s — %s", flow.request.url, reason)
                 flow.response = _block(reason)
                 return
 
-        log.info(
-            "PASS %s %s %s",
-            "tight" if local_port == TIGHT_PORT else "loose",
-            flow.request.method, flow.request.url,
-        )
+        log.info("PASS tight %s %s", flow.request.method, flow.request.url)
 
 
 def _validate_messages_body(body: bytes) -> tuple[bool, str]:

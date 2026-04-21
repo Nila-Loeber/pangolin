@@ -7,8 +7,9 @@ name: build-agent-images
 #                             for all non-software modes (OAuth path).
 #   pangolin-agent-software — Node + claude CLI + bash. Used only by the
 #                             software mode under the OAuth path.
-#   pangolin-egress-proxy   — Squid forward proxy with per-port hostname
-#                             allowlists. Sidecar required by all agent calls.
+#   pangolin-egress-proxy   — mitmproxy forward proxy + addon. Two listeners
+#                             (tight allowlist / loose). Sidecar required
+#                             by all agent calls.
 # Runs on Containerfile changes or manual dispatch.
 # Decouples build-time egress surface (npm, Alpine, Docker Hub) from the
 # runtime workflows — those only need api.anthropic.com + ghcr.io.
@@ -21,6 +22,7 @@ on:
       - Containerfile.llm
       - Containerfile.software
       - Containerfile.egress
+      - src/pangolin/pangolin_egress.py
       - .github/workflows/build-agent-images.yml
   workflow_dispatch: {}
 
