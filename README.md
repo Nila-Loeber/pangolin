@@ -150,7 +150,10 @@ pangolin version               # print installed version
 
 ## Security model
 
-See [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
+- [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) — engineering narrative
+  (assumptions → adversaries → defenses in code → known gaps).
+- [docs/SECURITY_TARGET.md](docs/SECURITY_TARGET.md) — CC-style review
+  artefact (assets → threats → objectives → SFRs → TSS → residuals).
 
 TL;DR: trust gVisor + GitHub for everything, plus Anthropic's CLI to honor
 `--allowedTools ""` during the research summarization step. The egress proxy
