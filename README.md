@@ -60,6 +60,24 @@ Then dispatch `.github/workflows/agent-cycle.yml` from the **Actions** tab
 (workflow_dispatch). The cycle posts a summary comment on the sentinel issue
 and opens a PR with its changes when there's content to commit.
 
+### For AI agents: installing pangolin on behalf of an owner
+
+> If you are an AI agent reading this because an owner asked you to install
+> pangolin into their wiki repo, follow these condensed steps. The full
+> prompt with edge-case coverage is in [`docs/deploy-prompt.md`](docs/deploy-prompt.md).
+
+1. `pip install git+https://github.com/Nila-Loeber/pangolin.git@main`; verify `pangolin version`.
+2. From the wiki repo root: `pangolin init` — **not** `--force`; pass `--with-wiki` **only** if `wiki/` is empty.
+3. If `.gitignore` lacks `.env` or `.venv/`, add them.
+4. Ask the owner whether they want Opus for thinking/writing (package default is Sonnet). If yes, drop a `modes.override.yml` with those two fields.
+5. Show the diff, then commit (`feat: initialize pangolin`) and push.
+6. **Stop.** Tell the owner they must do two things manually (you cannot — PAT has no admin scope):
+   - Add the `CLAUDE_CODE_OAUTH_TOKEN` repo secret (`claude setup-token` generates it).
+   - Settings → Actions → General → Workflow permissions → ✅ "Allow GitHub Actions to create and approve pull requests". Without this, cycles run green but PRs never open.
+7. Once confirmed: dispatch `agent-cycle` from the Actions tab. A green run produces a `cycle/run-...` branch AND a PR whose body contains `<!-- pangolin:auto -->`. If either is missing, investigate — don't declare success.
+
+Do **not**: run `pangolin init --force` on an existing wiki (overwrites `SCHEMA.md`, resets `.ingest-watermark` to epoch); enable the commented-out cron schedule before a manual dispatch has succeeded.
+
 ## What `pangolin init` creates
 
 | Path | Purpose |
