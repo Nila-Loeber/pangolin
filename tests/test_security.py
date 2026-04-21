@@ -308,57 +308,53 @@ class TestMitmPhaseA:
             text = (REPO/cf).read_text()
             assert "NODE_EXTRA_CA_CERTS=/etc/pangolin/proxy-ca.crt" in text, f"{cf} missing"
 
-    def test_egress_container_ssl_bumps_anthropic(self):
-        """Containerfile.egress configures squid ssl-bump for Anthropic only
-        and strips/re-injects the Authorization header."""
+    def test_egress_container_runs_mitmproxy(self):
+        """Containerfile.egress installs mitmproxy + ships the addon
+        + starts mitmdump with two listeners. No squid/ICAP/aiohttp."""
         cf = (REPO/"Containerfile.egress").read_text()
-        assert "ssl-bump" in cf
-        assert "anthropic_hosts" in cf
-        # Strip global, inject for Anthropic.
-        assert "request_header_access Authorization deny all" in cf
-        assert 'request_header_add Authorization "Bearer ${ANTHROPIC_TOKEN}" anthropic_bumped' in cf
-        # CA generated at runtime, not committed.
-        assert "openssl genrsa" in cf
-        assert "envsubst" in cf
+        assert "mitmproxy==" in cf  # pinned
+        assert "pangolin_egress.py" in cf
+        assert "mitmdump" in cf
+        assert "regular@3128" in cf and "regular@3129" in cf
+        # The addon does the work — no squid stuff should remain.
+        assert "squid" not in cf.lower()
+        assert "icap" not in cf.lower()
 
 
 class TestMitmPhaseB:
-    """Phase B: inspector.py blocks server-side-tool exfil via api.anthropic.com."""
+    """Phase B: pangolin_egress addon blocks server-side-tool exfil via
+    api.anthropic.com /v1/messages POST bodies."""
 
-    def test_inspector_module_present(self):
-        """Inspector ships as a standalone module in the package."""
-        inspector = REPO / "src/pangolin/egress_inspector.py"
-        assert inspector.exists()
-        code = inspector.read_text()
-        assert "def validate_body" in code
+    def test_egress_addon_present(self):
+        """The mitmproxy addon ships in the package."""
+        addon = REPO / "src/pangolin/pangolin_egress.py"
+        assert addon.exists()
+        code = addon.read_text()
+        assert "def request" in code  # mitmproxy hook
+        assert "_validate_messages_body" in code
         assert "SERVER_TOOL_ALLOWLIST" in code
 
     def test_server_tool_allowlist_empty_by_default(self):
         """No pangolin mode needs Anthropic's server-side tools — the
         starting policy denies them all. Changing this set should trip a
         review."""
-        from pangolin.egress_inspector import SERVER_TOOL_ALLOWLIST
-        assert SERVER_TOOL_ALLOWLIST == set()
+        # Importing the addon needs mitmproxy installed; isolate the test
+        # to the constants by reading the file.
+        code = (REPO/"src/pangolin/pangolin_egress.py").read_text()
+        assert "SERVER_TOOL_ALLOWLIST: set[str] = set()" in code
 
-    def test_containerfile_wires_inspector_to_squid(self):
-        cf = (REPO/"Containerfile.egress").read_text()
-        # Both inspectors are shipped into the image — egress_inspector.py
-        # was the original aiohttp HTTP-proxy (kept for backward-compat
-        # smoke tests), egress_icap.py is the ICAP REQMOD service that
-        # actually wires into squid's adaptation pipeline.
-        assert "egress_inspector.py" in cf
-        assert "egress_icap.py" in cf
-        # Startup spawns the ICAP service before squid.
-        assert "python3 /usr/local/bin/egress_icap.py" in cf
-        # adaptation_access (Phase B) is currently disabled in the active
-        # squid config — preview/body-handling needs latency tuning before
-        # production. Tracked in #7. The breadcrumbs must stay so future
-        # readers know this is a deferred-not-broken state:
-        assert "Phase B" in cf and "DISABLED" in cf
-        assert "ICAP" in cf
-        # icap_service definition stays commented but present, ready to
-        # uncomment when latency tuning lands.
-        assert "icap_service inspector" in cf
+    def test_addon_authorization_rewrite(self):
+        code = (REPO/"src/pangolin/pangolin_egress.py").read_text()
+        # Addon strips incoming Authorization unconditionally on anthropic
+        # then re-injects from $ANTHROPIC_TOKEN.
+        assert 'flow.request.headers.pop("Authorization"' in code
+        assert 'ANTHROPIC_TOKEN' in code
+
+    def test_addon_validates_messages_body(self):
+        code = (REPO/"src/pangolin/pangolin_egress.py").read_text()
+        assert "/v1/messages" in code
+        assert "tools" in code
+        assert "ttype" in code  # the discriminator we block on
 
 
 class TestAtomicDeploy:

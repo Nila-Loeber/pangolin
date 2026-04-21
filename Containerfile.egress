@@ -1,216 +1,52 @@
 # Containerfile.egress — pangolin-egress-proxy
 #
-# Squid forward proxy with two trust tiers + ssl-bump for api.anthropic.com.
+# mitmproxy-based egress proxy with two listening ports:
+#   3128 tight  — hostname allowlist + Anthropic body inspection +
+#                 Authorization injection
+#   3129 loose  — any HTTPS host (research-search WebFetch)
 #
-# Ports:
-#   3128 tight — hostname allowlist (Anthropic+GitHub+PyPI+etc.), ssl-bump
-#                ONLY for api.anthropic.com so the proxy can inject the
-#                OAuth token. Everything else is spliced (TLS passthrough).
-#   3129 loose — any HTTPS host, no bump. Used only by research-search
-#                WebFetch (client-side reach for arbitrary web hosts).
-#
-# Phase A of the MITM plan (BACKLOG): the Authorization header is stripped
-# from any incoming request and re-injected server-side for Anthropic-bound
-# traffic. Token lives only in the proxy's env ($ANTHROPIC_TOKEN), never
-# in agent containers — defeats `/proc/self/environ` and prompt-injection
-# Bash-based exfil.
-#
-# CA material is generated at container startup (not committed) and the
-# public cert is written to /shared/proxy-ca.crt — the orchestrator mounts
-# that volume into agent containers as NODE_EXTRA_CA_CERTS so the claude
-# CLI trusts the bumped cert.
+# All policy lives in src/pangolin/pangolin_egress.py — a mitmproxy addon.
+# That single file does Phase A (token hiding via header rewrite) and
+# Phase B (server-side-tool body filter).
 
-FROM alpine@sha256:a4f4213abb84c497377b8544c81b3564f313746700372ec4fe84653e4fb03805
+# Debian-slim base — mitmproxy needs prebuilt wheels for aioquic +
+# mitmproxy_rs, which Alpine's musl can't satisfy without a Rust
+# toolchain in the build (50× longer build, larger image). Slim Debian
+# gets us prebuilt wheels in seconds. Image is ~120MB vs ~50MB if we
+# could use Alpine — acceptable for a sidecar proxy.
+FROM python:3.12-slim-bookworm@sha256:d97792894a6a4162cae14da44542a83c75e56c77a27b92d58f3f83b7bc961292
 
-# Pinned: squid 6.x on Alpine 3.20. Alpine's squid build includes
-# --enable-ssl-crtd so ssl-bump + security_file_certgen work out-of-box.
-# openssl for runtime CA generation; gettext provides envsubst for
-# interpolating the token into the config at startup.
-# ca-certificates unpinned — trust-root bundle, see Containerfile.bash.
-RUN apk add --no-cache \
-      ca-certificates \
-      gettext=0.22.5-r0 \
-      openssl=3.3.7-r0 \
-      squid=6.9-r0 \
-      python3=3.12.13-r0 \
-      py3-aiohttp=3.9.3-r1 \
-  && squid -v 2>&1 | grep -q -- '--enable-ssl-crtd' \
-  || (echo "FATAL: Alpine squid was built without --enable-ssl-crtd; ssl-bump needs a rebuild" >&2 && exit 1)
+RUN pip install --no-cache-dir mitmproxy==11.0.2 \
+  && mitmdump --version | head -1
 
-# Phase B inspector: reverse-proxy between squid (post-ssl-bump plaintext)
-# and api.anthropic.com. Validates /v1/messages request bodies against
-# the server-side-tool policy; rejects attacker-supplied web_fetch etc.
-# Shipped as a standalone module (no pangolin-package deps) so the proxy
-# image stays lean.
-COPY src/pangolin/egress_inspector.py /usr/local/bin/egress_inspector.py
-COPY src/pangolin/egress_icap.py /usr/local/bin/egress_icap.py
+COPY src/pangolin/pangolin_egress.py /usr/local/bin/pangolin_egress.py
 
-# squid.conf template — ${ANTHROPIC_TOKEN} is substituted at container
-# startup by envsubst. Config structure:
-#   - Two ports, two tiers (same as before)
-#   - tight port adds ssl-bump for Anthropic only
-#   - Authorization header stripped globally, re-injected for Anthropic
-RUN mkdir -p /etc/squid && cat > /etc/squid/squid.conf.template <<'EOF'
-# Two ports, two trust tiers; tight additionally ssl-bumps Anthropic traffic.
-http_port 3128 name=tight ssl-bump \
-    cert=/etc/squid/ca/ca.crt \
-    key=/etc/squid/ca/ca.key \
-    generate-host-certificates=on \
-    dynamic_cert_mem_cache_size=4MB
-http_port 3129 name=loose
+# mitmproxy keeps its CA + config under one directory; we point both at
+# /etc/mitmproxy so file ownership is predictable. The CA is generated on
+# first proxy start; the addon's `running()` hook publishes it to /shared
+# for agent containers to mount as NODE_EXTRA_CA_CERTS.
+RUN mkdir -p /etc/mitmproxy /shared \
+  && chmod 755 /etc/mitmproxy /shared
 
-sslcrtd_program /usr/lib/squid/security_file_certgen -s /var/lib/squid/ssl_db -M 4MB
-sslcrtd_children 5
-
-acl Safe_ports port 443
-acl CONNECT method CONNECT
-acl SSL_ports port 443
-
-acl tight_port myportname tight
-acl loose_port myportname loose
-
-# Bump-target: just api.anthropic.com. Everything else on tight is spliced.
-acl anthropic_hosts ssl::server_name api.anthropic.com
-# Dstdomain variant (post-bump, acts on the decrypted HTTP Host header).
-# Used for peer-routing + header-injection rules below.
-acl anthropic_bumped dstdomain api.anthropic.com
-
-acl step1 at_step SslBump1
-ssl_bump peek step1
-ssl_bump bump anthropic_hosts
-ssl_bump splice all
-
-# Phase B: route bumped Anthropic traffic to the in-container inspector
-# (egress_inspector.py on 127.0.0.1:9000). The inspector validates request
-# bodies against the server-side-tool policy and re-establishes TLS to
-# api.anthropic.com. Non-Anthropic traffic keeps its normal direct path.
-# Phase B: ICAP REQMOD service for body-content validation (server-side
-# tool allowlist). Architecture works — squid's adaptation pipeline
-# bypasses the ssl-bump pinning issue that killed the cache_peer attempt.
-# `egress_icap.py` is shipped with the image and starts up alongside squid.
-#
-# adaptation_access is currently DISABLED while the Preview/body-handling
-# path is tuned for acceptable latency on streaming /v1/messages requests
-# (claude CLI makes ~10 calls per turn; full-body-buffer serialisation
-# adds enough round-trip to time out cycles). Tracked in #7.
-#
-# Once the latency tuning lands (probably: Preview=4096 + properly handle
-# 100-Continue + threaded body parsing), uncomment to re-enable Phase B:
-#
-# icap_enable on
-# icap_send_client_ip off
-# icap_send_client_username off
-# icap_service inspector reqmod_precache icap://127.0.0.1:1344/inspector
-# adaptation_access inspector allow tight_port anthropic_bumped
-# adaptation_access inspector deny all
-
-# Tight allowlist (unchanged from Phase-0 proxy). dstdomain matches CONNECT
-# target hostname (HTTPS) and Host header (HTTP) — robust to IP rotation.
-acl tight_hosts dstdomain api.anthropic.com api.github.com github.com \
-                          objects.githubusercontent.com codeload.github.com \
-                          ghcr.io pkg-containers.githubusercontent.com \
-                          pypi.org files.pythonhosted.org \
-                          gvisor.dev storage.googleapis.com \
-                          dl-cdn.alpinelinux.org \
-                          registry.npmjs.org
-
-http_access deny !Safe_ports
-http_access deny CONNECT !SSL_ports
-
-http_access allow tight_port tight_hosts
-http_access deny tight_port
-
-http_access allow loose_port
-
-http_access deny all
-
-# Strip any Authorization header from inbound agent requests. Then
-# re-inject the server-side token for Anthropic-bound requests only.
-# The agent container has no access to $ANTHROPIC_TOKEN — it lives only
-# in this proxy's environment and is written into the config at startup.
-request_header_access Authorization deny all
-request_header_add Authorization "Bearer ${ANTHROPIC_TOKEN}" anthropic_bumped
-
-cache deny all
-access_log stdio:/dev/stdout
-cache_log stderr
-pid_filename none
-debug_options ALL,1 93,3 90,3
-EOF
-
-# Runtime entrypoint: generate CA on first boot, export public cert to
-# /shared/ (mounted by the orchestrator into agent containers), interpolate
-# the token, then exec squid.
+# Entrypoint: launch mitmdump with two listeners + the addon.
 RUN cat > /usr/local/bin/start-proxy.sh <<'EOF'
 #!/bin/sh
 set -e
 
-CA_DIR=/etc/squid/ca
-SHARED_DIR=/shared
-SSL_DB=/var/lib/squid/ssl_db
-
-mkdir -p "$CA_DIR" "$SHARED_DIR"
-# Parent dir for ssl_db must exist before security_file_certgen can populate
-# it — alpine's squid package ships /var/lib but not /var/lib/squid.
-mkdir -p "$(dirname "$SSL_DB")"
-
-if [ ! -f "$CA_DIR/ca.key" ]; then
-    echo "[start-proxy] generating runtime CA (valid 1 day, rotated each cycle)"
-    openssl genrsa -out "$CA_DIR/ca.key" 2048 2>/dev/null
-    openssl req -x509 -new -nodes \
-        -key "$CA_DIR/ca.key" \
-        -days 1 \
-        -out "$CA_DIR/ca.crt" \
-        -subj "/CN=pangolin-egress-proxy" 2>/dev/null
-fi
-
-# Expose the public cert for agent containers (mounted read-only).
-cp "$CA_DIR/ca.crt" "$SHARED_DIR/proxy-ca.crt"
-chmod 644 "$SHARED_DIR/proxy-ca.crt"
-
-# Initialise squid's ssl_db for dynamic per-host cert generation.
-if [ ! -d "$SSL_DB/certs" ]; then
-    /usr/lib/squid/security_file_certgen -c -s "$SSL_DB" -M 4MB >/dev/null
-fi
-chown -R squid:squid "$SSL_DB" "$CA_DIR"
-
 if [ -z "$ANTHROPIC_TOKEN" ]; then
-    # Phase A still accepts empty token — the inject-Authorization acl
-    # only fires for api.anthropic.com; with no token the header simply
-    # isn't set and the agent-container call will 401. Explicit failure
-    # is fine for dev; in production the orchestrator guarantees a token.
     echo "[start-proxy] WARNING: ANTHROPIC_TOKEN empty — Anthropic auth injection disabled"
 fi
 
-# Interpolate the token into the config.
-ANTHROPIC_TOKEN="${ANTHROPIC_TOKEN}" envsubst '$ANTHROPIC_TOKEN' \
-    < /etc/squid/squid.conf.template > /etc/squid/squid.conf
-
-# Phase B: bring up the ICAP REQMOD service first so squid's
-# adaptation_access can reach it on the first Anthropic request.
-echo "[start-proxy] starting egress_icap (policy: deny server-side tools)"
-python3 /usr/local/bin/egress_icap.py &
-ICAP_PID=$!
-
-# Reap the ICAP service if squid exits — they live together.
-trap 'kill "$ICAP_PID" 2>/dev/null' EXIT TERM INT
-
-# Brief startup poll so squid finds the ICAP service alive on first OPTIONS.
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-    if nc -z 127.0.0.1 1344 2>/dev/null; then break; fi
-    sleep 0.2
-done
-
-# squid drops to user 'squid' (its cache_effective_user). Container's
-# /dev/stdout and /dev/stderr are root-owned by default; chmod so squid
-# can still write its logs after dropping privileges.
-chmod 666 /dev/stdout /dev/stderr 2>/dev/null || true
-
-exec squid -N -f /etc/squid/squid.conf
+exec mitmdump \
+    --set confdir=/etc/mitmproxy \
+    --mode "regular@3128" \
+    --mode "regular@3129" \
+    -s /usr/local/bin/pangolin_egress.py
 EOF
 
 RUN chmod +x /usr/local/bin/start-proxy.sh
 
 EXPOSE 3128 3129
 VOLUME /shared
+
 CMD ["/usr/local/bin/start-proxy.sh"]

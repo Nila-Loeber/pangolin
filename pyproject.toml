@@ -25,8 +25,6 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
-    "aiohttp>=3.10",        # egress_inspector reverse-proxy
-    "pytest-aiohttp>=1.0",  # live tests of the inspector
     "ruff>=0.6",
     "build>=1.0",
 ]
