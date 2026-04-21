@@ -45,6 +45,12 @@ def default_wiki_dir() -> Path:
     return default_config_root() / "wiki"
 
 
+def default_claude_skills_dir() -> Path:
+    """Claude Code skill templates shipped with the package, scaffolded into
+    each wiki repo's `.claude/skills/` by `pangolin init`."""
+    return default_config_root() / "claude" / "skills"
+
+
 def resolve_config(relative: str) -> Path:
     """Resolve a config path with wiki-override-wins-over-package-default.
 
