@@ -556,7 +556,8 @@ def spawn_agent_container_tooluse(
         log(f"  container agent {mode.name}: timed out (180s)")
         return {}
     if result.returncode != 0:
-        log(f"  container agent {mode.name}: exit {result.returncode}; stderr={result.stderr[:300]}")
+        log(f"  container agent {mode.name}: exit {result.returncode}; "
+            f"stderr={result.stderr[:500]!r}; stdout={result.stdout[:500]!r}")
         return {}
     if result.stderr:
         log(f"  container agent {mode.name}: stderr={result.stderr[:500]}")
@@ -614,7 +615,8 @@ def spawn_agent_container_direct(
         log(f"  spawn_agent_container: timed out ({timeout}s)")
         return {}
     if result.returncode != 0:
-        log(f"  spawn_agent_container: exit {result.returncode}; stderr={result.stderr[:200]}")
+        log(f"  spawn_agent_container: exit {result.returncode}; "
+            f"stderr={result.stderr[:500]!r}; stdout={result.stdout[:500]!r}")
         return {}
 
     # Parse the CLI JSON envelope
