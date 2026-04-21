@@ -43,6 +43,7 @@ RUN apk add --no-cache \
 # Shipped as a standalone module (no pangolin-package deps) so the proxy
 # image stays lean.
 COPY src/pangolin/egress_inspector.py /usr/local/bin/egress_inspector.py
+COPY src/pangolin/egress_icap.py /usr/local/bin/egress_icap.py
 
 # squid.conf template — ${ANTHROPIC_TOKEN} is substituted at container
 # startup by envsubst. Config structure:
@@ -83,22 +84,25 @@ ssl_bump splice all
 # (egress_inspector.py on 127.0.0.1:9000). The inspector validates request
 # bodies against the server-side-tool policy and re-establishes TLS to
 # api.anthropic.com. Non-Anthropic traffic keeps its normal direct path.
-# Phase B (request-body validation) is currently DISABLED — squid's
-# ssl-bump pins the bumped TLS connection to the origin server (anthropic),
-# which prevents cache_peer routing for inner POSTs. PINNED is selected
-# preferentially over FIRSTUP_PARENT/inspector → squid returns
-# ERR_CANNOT_FORWARD on every inner POST. This is a fundamental ssl-bump
-# constraint, not a config issue: tried originserver vs not, persistent-
-# connection-off, post-method-only acl scoping, all hit the same pin.
+# Phase B: ICAP REQMOD service for body-content validation (server-side
+# tool allowlist). Architecture works — squid's adaptation pipeline
+# bypasses the ssl-bump pinning issue that killed the cache_peer attempt.
+# `egress_icap.py` is shipped with the image and starts up alongside squid.
 #
-# Proper fix needs the inspector rewritten as an ICAP service. ICAP is
-# squid's native content-inspection protocol; it integrates without the
-# cache_peer pinning conflict. Tracked as pangolin issue #7.
+# adaptation_access is currently DISABLED while the Preview/body-handling
+# path is tuned for acceptable latency on streaming /v1/messages requests
+# (claude CLI makes ~10 calls per turn; full-body-buffer serialisation
+# adds enough round-trip to time out cycles). Tracked in #7.
 #
-# Until then, ship Phase A only: ssl-bump + token-injection (below) still
-# works, which closes /proc/self/environ token exfil. We lose API-body
-# validation (server-side-tool allowlist enforcement) — for owner-only
-# private-repo deploys this is marginal; for GA it's load-bearing.
+# Once the latency tuning lands (probably: Preview=4096 + properly handle
+# 100-Continue + threaded body parsing), uncomment to re-enable Phase B:
+#
+# icap_enable on
+# icap_send_client_ip off
+# icap_send_client_username off
+# icap_service inspector reqmod_precache icap://127.0.0.1:1344/inspector
+# adaptation_access inspector allow tight_port anthropic_bumped
+# adaptation_access inspector deny all
 
 # Tight allowlist (unchanged from Phase-0 proxy). dstdomain matches CONNECT
 # target hostname (HTTPS) and Host header (HTTP) — robust to IP rotation.
@@ -131,7 +135,7 @@ cache deny all
 access_log stdio:/dev/stdout
 cache_log stderr
 pid_filename none
-debug_options ALL,1
+debug_options ALL,1 93,3 90,3
 EOF
 
 # Runtime entrypoint: generate CA on first boot, export public cert to
@@ -182,18 +186,18 @@ fi
 ANTHROPIC_TOKEN="${ANTHROPIC_TOKEN}" envsubst '$ANTHROPIC_TOKEN' \
     < /etc/squid/squid.conf.template > /etc/squid/squid.conf
 
-# Phase B: bring up the policy inspector first so squid's cache_peer
-# to 127.0.0.1:9000 succeeds on the first Anthropic request.
-echo "[start-proxy] starting egress_inspector (policy: deny server-side tools)"
-python3 /usr/local/bin/egress_inspector.py &
-INSPECTOR_PID=$!
+# Phase B: bring up the ICAP REQMOD service first so squid's
+# adaptation_access can reach it on the first Anthropic request.
+echo "[start-proxy] starting egress_icap (policy: deny server-side tools)"
+python3 /usr/local/bin/egress_icap.py &
+ICAP_PID=$!
 
-# Reap the inspector if squid exits — the two live together.
-trap 'kill "$INSPECTOR_PID" 2>/dev/null' EXIT TERM INT
+# Reap the ICAP service if squid exits — they live together.
+trap 'kill "$ICAP_PID" 2>/dev/null' EXIT TERM INT
 
-# Brief startup poll so the cache_peer isn't DOWN on first request.
+# Brief startup poll so squid finds the ICAP service alive on first OPTIONS.
 for _ in 1 2 3 4 5 6 7 8 9 10; do
-    if nc -z 127.0.0.1 9000 2>/dev/null; then break; fi
+    if nc -z 127.0.0.1 1344 2>/dev/null; then break; fi
     sleep 0.2
 done
 

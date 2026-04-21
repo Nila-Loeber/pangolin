@@ -342,21 +342,23 @@ class TestMitmPhaseB:
 
     def test_containerfile_wires_inspector_to_squid(self):
         cf = (REPO/"Containerfile.egress").read_text()
-        # Inspector is shipped into the image (still present even when its
-        # routing is disabled — see Phase B status note in Containerfile).
+        # Both inspectors are shipped into the image — egress_inspector.py
+        # was the original aiohttp HTTP-proxy (kept for backward-compat
+        # smoke tests), egress_icap.py is the ICAP REQMOD service that
+        # actually wires into squid's adaptation pipeline.
         assert "egress_inspector.py" in cf
-        assert "py3-aiohttp" in cf
-        # Startup spawns the inspector before squid.
-        assert "python3 /usr/local/bin/egress_inspector.py" in cf
-        # Phase B routing (cache_peer + never_direct) is currently disabled
-        # in the active config because squid's ssl-bump pins the bumped TLS
-        # connection to the origin server, blocking cache_peer routing for
-        # inner POSTs. Tracked as pangolin issue #7 — proper fix is to
-        # rewrite the inspector as an ICAP service. The Containerfile must
-        # carry the rationale so future readers know this is intentional,
-        # not an oversight:
+        assert "egress_icap.py" in cf
+        # Startup spawns the ICAP service before squid.
+        assert "python3 /usr/local/bin/egress_icap.py" in cf
+        # adaptation_access (Phase B) is currently disabled in the active
+        # squid config — preview/body-handling needs latency tuning before
+        # production. Tracked in #7. The breadcrumbs must stay so future
+        # readers know this is a deferred-not-broken state:
         assert "Phase B" in cf and "DISABLED" in cf
-        assert "ICAP" in cf  # the planned-fix breadcrumb
+        assert "ICAP" in cf
+        # icap_service definition stays commented but present, ready to
+        # uncomment when latency tuning lands.
+        assert "icap_service inspector" in cf
 
 
 class TestAtomicDeploy:
