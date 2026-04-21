@@ -83,15 +83,22 @@ ssl_bump splice all
 # (egress_inspector.py on 127.0.0.1:9000). The inspector validates request
 # bodies against the server-side-tool policy and re-establishes TLS to
 # api.anthropic.com. Non-Anthropic traffic keeps its normal direct path.
-cache_peer 127.0.0.1 parent 9000 0 no-query originserver name=inspector
-# Scope cache_peer to tight-port-only Anthropic traffic. Without this scope,
-# the anthropic_bumped acl matches loose-port CONNECTs too (it's dstdomain),
-# but originserver cache_peers can't forward CONNECTs → loose port returned
-# 500 on every Anthropic call. Tight stays unaffected: ssl-bump terminates
-# the CONNECT, and the resulting plaintext POST flows through this peer.
-cache_peer_access inspector allow tight_port anthropic_bumped
-cache_peer_access inspector deny all
-never_direct allow tight_port anthropic_bumped
+# Phase B (request-body validation) is currently DISABLED — squid's
+# ssl-bump pins the bumped TLS connection to the origin server (anthropic),
+# which prevents cache_peer routing for inner POSTs. PINNED is selected
+# preferentially over FIRSTUP_PARENT/inspector → squid returns
+# ERR_CANNOT_FORWARD on every inner POST. This is a fundamental ssl-bump
+# constraint, not a config issue: tried originserver vs not, persistent-
+# connection-off, post-method-only acl scoping, all hit the same pin.
+#
+# Proper fix needs the inspector rewritten as an ICAP service. ICAP is
+# squid's native content-inspection protocol; it integrates without the
+# cache_peer pinning conflict. Tracked as pangolin issue #7.
+#
+# Until then, ship Phase A only: ssl-bump + token-injection (below) still
+# works, which closes /proc/self/environ token exfil. We lose API-body
+# validation (server-side-tool allowlist enforcement) — for owner-only
+# private-repo deploys this is marginal; for GA it's load-bearing.
 
 # Tight allowlist (unchanged from Phase-0 proxy). dstdomain matches CONNECT
 # target hostname (HTTPS) and Host header (HTTP) — robust to IP rotation.

@@ -342,14 +342,21 @@ class TestMitmPhaseB:
 
     def test_containerfile_wires_inspector_to_squid(self):
         cf = (REPO/"Containerfile.egress").read_text()
-        # Inspector is shipped into the image.
+        # Inspector is shipped into the image (still present even when its
+        # routing is disabled — see Phase B status note in Containerfile).
         assert "egress_inspector.py" in cf
         assert "py3-aiohttp" in cf
-        # squid routes Anthropic-bumped traffic to it.
-        assert "cache_peer 127.0.0.1 parent 9000" in cf
-        assert "never_direct allow anthropic_bumped" in cf
         # Startup spawns the inspector before squid.
         assert "python3 /usr/local/bin/egress_inspector.py" in cf
+        # Phase B routing (cache_peer + never_direct) is currently disabled
+        # in the active config because squid's ssl-bump pins the bumped TLS
+        # connection to the origin server, blocking cache_peer routing for
+        # inner POSTs. Tracked as pangolin issue #7 — proper fix is to
+        # rewrite the inspector as an ICAP service. The Containerfile must
+        # carry the rationale so future readers know this is intentional,
+        # not an oversight:
+        assert "Phase B" in cf and "DISABLED" in cf
+        assert "ICAP" in cf  # the planned-fix breadcrumb
 
 
 class TestAtomicDeploy:

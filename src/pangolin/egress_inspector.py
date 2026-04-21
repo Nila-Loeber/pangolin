@@ -100,9 +100,16 @@ def _is_messages_post(method: str, path: str) -> bool:
     return path.split("?", 1)[0].rstrip("/") == "/v1/messages"
 
 
-async def _forward(request: web.Request, session: ClientSession) -> web.StreamResponse:
-    """Copy the request to Anthropic (with original headers) and stream the
-    response body back to squid."""
+async def _forward(request: web.Request, session: ClientSession) -> web.Response:
+    """Copy the request to Anthropic (with original headers) and return the
+    full response back to squid.
+
+    Was StreamResponse with chunked transfer-encoding — that confused squid 6.9
+    when forwarding via cache_peer originserver: squid would close the
+    transport before aiohttp finished writing headers. Buffering the entire
+    body and returning a Response with explicit Content-Length avoids the
+    HTTP/1.1 chunked-encoding handshake entirely.
+    """
     fwd_headers = {
         k: v for k, v in request.headers.items()
         if k.lower() not in HOP_BY_HOP
@@ -114,19 +121,17 @@ async def _forward(request: web.Request, session: ClientSession) -> web.StreamRe
         request.method, upstream_url, headers=fwd_headers, data=body,
         allow_redirects=False,
     ) as upstream:
-        # Preserve status + headers (minus hop-by-hop).
+        upstream_body = await upstream.read()
+        # Drop any framing-related headers — aiohttp will set Content-Length
+        # itself based on the buffered body.
+        framing = {"transfer-encoding", "content-length", "content-encoding"}
         resp_headers = {
             k: v for k, v in upstream.headers.items()
-            if k.lower() not in HOP_BY_HOP
+            if k.lower() not in HOP_BY_HOP and k.lower() not in framing
         }
-        response = web.StreamResponse(
-            status=upstream.status, headers=resp_headers,
+        return web.Response(
+            status=upstream.status, headers=resp_headers, body=upstream_body,
         )
-        await response.prepare(request)
-        async for chunk in upstream.content.iter_any():
-            await response.write(chunk)
-        await response.write_eof()
-        return response
 
 
 async def handle(request: web.Request) -> web.StreamResponse:
