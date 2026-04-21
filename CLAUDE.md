@@ -30,7 +30,7 @@ The `tests/test_security.py` suite is the single source of truth for the securit
 - `Containerfile.bash` → `pangolin-agent-bash` (Python+bash, no network — used by tools.py for the API-key fallback)
 - `Containerfile.llm` → `pangolin-agent-llm` (Node+claude-CLI, no bash — default for all non-software modes under OAuth)
 - `Containerfile.software` → `pangolin-agent-software` (Node+claude-CLI+bash — software-mode only, under OAuth)
-- `Containerfile.egress` → `pangolin-egress-proxy` (squid, two-port hostname allowlist — sidecar for all agent outbound)
+- `Containerfile.egress` → `pangolin-egress-proxy` (mitmproxy + addon, two-port hostname allowlist — sidecar for all agent outbound)
 - `.github/workflows/build-agent-images.yml` — publishes all four to GHCR
 
 ## The four images (three agent + one infra)
@@ -40,7 +40,7 @@ The `tests/test_security.py` suite is the single source of truth for the securit
 | `pangolin-agent-llm` | all non-software modes (OAuth path) | Node + CLI, no bash → defense-in-depth floor when `--allowedTools` is strict |
 | `pangolin-agent-software` | software mode (OAuth path) | Node + CLI + bash → CLI can fork bash for code tasks |
 | `pangolin-agent-bash` | Bash tool via `tools.py` (API-key fallback path) | bash + no network → sandboxed shell for the in-process SDK route |
-| `pangolin-egress-proxy` | sidecar, used by all agent containers | squid forward proxy, hostname allowlist, two trust tiers (tight + loose) |
+| `pangolin-egress-proxy` | sidecar, used by all agent containers | mitmproxy + `pangolin_egress.py` addon; hostname allowlist, two trust tiers (tight + loose), selective MITM of `api.anthropic.com` only |
 
 ## Egress filtering
 
@@ -50,30 +50,34 @@ Two ports:
 - **3128 tight** — `api.anthropic.com`, `api.github.com`, `github.com`, `ghcr.io`, `pypi.org`, `files.pythonhosted.org`, `gvisor.dev`, `storage.googleapis.com`, `dl-cdn.alpinelinux.org`, `registry.npmjs.org`. Default for all modes.
 - **3129 loose** — any HTTPS host. Used **only** by research-search (WebFetch is client-side and needs arbitrary web reach).
 
-MITM Phase A is live: the tight port ssl-bumps api.anthropic.com only
-(other tight hosts are spliced). At startup the proxy generates a runtime
-CA (rotates each cycle) and writes the public cert to a shared volume
-`pangolin-proxy-ca`, which every agent container mounts read-only at
+Phase A+B both live, implemented in one mitmproxy addon at
+`src/pangolin/pangolin_egress.py` (no squid, no ICAP, no side-process
+aiohttp). At startup the proxy generates a runtime CA (rotates each
+cycle) and writes the public cert to a shared volume `pangolin-proxy-ca`,
+which every agent container mounts read-only at
 `/etc/pangolin/proxy-ca.crt`. `NODE_EXTRA_CA_CERTS=/etc/pangolin/proxy-ca.crt`
-(baked into Containerfile.llm + Containerfile.software) makes the claude
-CLI trust it. The real `CLAUDE_CODE_OAUTH_TOKEN` never enters an agent
-container — it rides into the proxy's env as `ANTHROPIC_TOKEN`, gets
-interpolated into `squid.conf` via envsubst, and squid strips any incoming
-Authorization header then injects `Bearer <token>` for anthropic_hosts.
-Agents receive a fixed placeholder token so the CLI doesn't short-circuit
-on empty credentials. Closes the `/proc/self/environ` + prompt-injected-Bash
-exfil path.
+(baked into Containerfile.llm + Containerfile.software) makes the
+claude CLI trust it.
 
-MITM Phase B is live: a small aiohttp reverse proxy
-(`src/pangolin/egress_inspector.py`, shipped into the egress image next to
-squid) sits between squid and api.anthropic.com. squid routes bumped
-Anthropic traffic to it via `cache_peer 127.0.0.1 parent 9000
-originserver` + `never_direct allow anthropic_bumped`. The inspector
-parses every `POST /v1/messages` body and rejects any tool entry with a
-`type` field — i.e. Anthropic's server-side tools (`web_fetch`,
-`web_search`, `code_execution`, ...) that a compromised agent could use
-to exfil data *through* api.anthropic.com to an attacker-chosen URL.
-Custom tools (`{name, description, input_schema}`) pass through. The
+A `tls_clienthello` hook splices every TLS connection *except*
+`api.anthropic.com` (via `ignore_connection=True`) — so the host `gh`
+CLI and other allowlisted clients don't need to trust our CA. Only
+Anthropic gets MITM'd.
+
+**Phase A — token hiding**: the real `CLAUDE_CODE_OAUTH_TOKEN` never
+enters an agent container. It rides into the proxy's env as
+`ANTHROPIC_TOKEN`; the addon's `request` hook strips any incoming
+Authorization header and injects `Bearer <token>` for
+`api.anthropic.com`. Agents ship a fixed placeholder so the CLI
+doesn't short-circuit. Closes the `/proc/self/environ` +
+prompt-injected-Bash exfil path.
+
+**Phase B — server-side-tool block**: the same addon parses every
+`POST /v1/messages` body and rejects any tool entry with a `type`
+field — Anthropic's server-side tools (`web_fetch`, `web_search`,
+`code_execution`, ...) that a compromised agent could use to exfil
+data *through* api.anthropic.com to an attacker-chosen URL. Custom
+tools (`{name, description, input_schema}`) pass through. The
 allowlist (`SERVER_TOOL_ALLOWLIST`) starts empty — no pangolin mode
 needs server-side tools today; research phase 1 uses the CLI's
 client-side WebSearch/WebFetch, not the API's.
@@ -162,11 +166,15 @@ Canonical pre-GA list. Check it before inventing work. Current high-level items:
 2. Generalize nlkw's wiki conventions
 
 Done (moved out of BACKLOG):
-- MITM Phase B — aiohttp reverse-proxy (`egress_inspector.py`) validates
-  `/v1/messages` request bodies; rejects server-side tool types
-  (web_fetch, web_search, code_execution, ...). Closes the
-  `api.anthropic.com`-as-exfil vector.
-- MITM Phase A — ssl-bump for api.anthropic.com, runtime CA in shared
+- Egress proxy rewrite — squid+ICAP+aiohttp replaced by a single
+  mitmproxy addon (`src/pangolin/pangolin_egress.py`). Phase A (token
+  hiding via Authorization rewrite) and Phase B (body inspection,
+  server-side-tool block) both live in the same addon; non-Anthropic
+  hosts are TLS-spliced so the host `gh` CLI doesn't need our CA.
+- MITM Phase B — validates `/v1/messages` request bodies; rejects
+  server-side tool types (web_fetch, web_search, code_execution, ...).
+  Closes the `api.anthropic.com`-as-exfil vector.
+- MITM Phase A — MITM for api.anthropic.com, runtime CA in shared
   volume, Authorization header stripped + re-injected server-side. Real
   OAuth token no longer reaches any agent container.
 - Atomic deploy — package is SSoT; wiki repos only hold the workflow shim

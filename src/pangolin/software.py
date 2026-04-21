@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -22,6 +23,19 @@ from pangolin.providers import create_provider
 from pangolin.tools import ToolConfig, ToolExecutor
 
 log = make_logger("software")
+
+
+def _branch_for_task(number: int, title: str) -> str:
+    """Build a git-safe branch name from an issue number + title.
+
+    Previously the code did `title.lower().replace(" ", "-")[:40]`, which
+    left colons intact. A title like `software: add X` produced
+    `task/12-software:-add-x` — `git push` parses that as a src:dst
+    refspec and rejects it. Strip everything that isn't alphanumeric
+    or `-`, collapse runs, trim edges.
+    """
+    slug = re.sub(r"[^a-z0-9-]+", "-", title.lower()).strip("-")[:40].strip("-")
+    return f"task/{number}-{slug}" if slug else f"task/{number}"
 
 
 def run():
@@ -38,8 +52,7 @@ def run():
 
     task = task_list[0]
     number = task["number"]
-    title = task["title"].lower().replace(" ", "-")[:40]
-    branch = f"task/{number}-{title}"
+    branch = _branch_for_task(number, task["title"])
     log(f"picked up: #{number}")
 
     # Create branch
