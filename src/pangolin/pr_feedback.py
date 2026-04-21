@@ -31,13 +31,18 @@ import os
 import subprocess
 
 from pangolin.classify import classify_comment
-from pangolin.core import AGENT_MARKER, REPO, gh, make_logger, wrap_agent_body
+from pangolin.core import (
+    AGENT_COMMIT_EMAIL,
+    AGENT_MARKER,
+    REPO,
+    gh,
+    make_logger,
+    wrap_agent_body,
+)
 from pangolin.modes import Mode, load_modes
 from pangolin.paths import resolve_config
 
 log = make_logger("pr-feedback")
-
-AGENT_COMMIT_EMAIL = "cycle-agent@users.noreply.github.com"
 
 
 def _is_owner_comment(comment: dict) -> bool:

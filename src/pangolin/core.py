@@ -28,6 +28,12 @@ REPO = _repo_root()
 # the standard "[bot]" login check — we need a content marker instead).
 AGENT_MARKER = "<!-- pangolin:auto -->"
 
+# Git commit author email the cycle uses (set by agent-cycle.yml before the
+# pip-installed pangolin runs). pr_feedback reads this to tell agent commits
+# apart from owner commits for its watermark. Must stay in sync with the
+# `git config user.email` line in default_config/workflows/agent-cycle.yml.
+AGENT_COMMIT_EMAIL = "cycle-agent@users.noreply.github.com"
+
 
 def wrap_agent_body(body: str) -> str:
     """Prepend the AGENT_MARKER to a body if not already present."""

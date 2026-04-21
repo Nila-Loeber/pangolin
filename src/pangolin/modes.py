@@ -36,7 +36,6 @@ SCHEMAS = {
     "triage": {
         "type": "object",
         "properties": {
-            "watermark": {"type": "string"},
             "decisions": {
                 "type": "array",
                 "items": {
@@ -65,7 +64,7 @@ SCHEMAS = {
                 },
             },
         },
-        "required": ["watermark", "decisions"],
+        "required": ["decisions"],
     },
     "summary": {
         "type": "object",

@@ -132,8 +132,11 @@ modes:
     code_execution: false
     allowed_tools: []
     denied_tools: [read, write, edit, glob, grep, bash]
-    readable_paths: [wiki/, notes/, .inbox-watermark]
-    writable_paths: [notes/ideas/, .inbox-watermark]
+    # .inbox-watermark was a file-based cursor; since the sentinel-issue
+    # refactor the watermark lives in a GitHub issue comment, so it's
+    # no longer a path that needs mounting.
+    readable_paths: [wiki/, notes/]
+    writable_paths: [notes/ideas/]
     gh_cli: false
     autonomy: medium
     trust_level: trusted
