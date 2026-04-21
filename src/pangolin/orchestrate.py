@@ -1113,10 +1113,13 @@ def commit_and_pr(branch: str, ts: str) -> str | None:
         ["git", "push", "origin", branch],
         cwd=str(REPO), capture_output=True, check=True,
     )
+    # AGENT_MARKER in the body is how pr_feedback.run() recognizes this as
+    # a pangolin-authored PR. Without it the follow-up phase finds zero
+    # PRs to monitor and the feedback loop never fires.
     pr_url = gh(
         "pr", "create",
         "--title", f"cycle: {ts}",
-        "--body", "Automated cycle. Review file-by-file.",
+        "--body", wrap_agent_body("Automated cycle. Review file-by-file."),
         "--base", "main", "--head", branch,
     )
     if not pr_url:
