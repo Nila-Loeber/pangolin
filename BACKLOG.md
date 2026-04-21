@@ -39,6 +39,42 @@
   `NODE_EXTRA_CA_CERTS` trust path into the agent images. Closes F4 from
   the TÜViT gap review (2026-04-21). Cheap; unblocks any future review.
 
+- **Egress SNI/host accounting + volume alerts.** Tight-tier hosts other
+  than `api.anthropic.com` are TLS-spliced — the proxy can observe the
+  SNI and byte-count but not the content. Today we log pass/block on
+  bumped hosts only. Add:
+  1. Structured log line per spliced connection (SNI, start time, bytes
+     in/out, duration).
+  2. Per-cycle summary (table: host → request count, total bytes).
+  3. Soft alert threshold (e.g. > N MB to a single non-anthropic host in
+     one cycle) surfaced in the cycle summary comment.
+  Covers the "exfil via pypi/ghcr/npm CDN" class that the Fefe-style
+  review (2026-04-21) flagged: the Anthropic-only MITM means every
+  other allowlisted host is a blind tunnel. Not content inspection, but
+  enough to notice a 200 MB outbound burst.
+
+- **Per-container iptables-REJECT (not host-wide).** `harden_egress`
+  used to install a host-wide iptables REJECT as DiD against
+  proxy-ignoring code; it was removed because GH-Actions log-blob
+  upload lives on the same host. Restore the DiD by applying REJECT
+  only inside the agent container's network namespace (docker network
+  `pangolin-net` rules, or `--cap-add NET_ADMIN` + per-container
+  iptables at startup). The host-level logging path is untouched;
+  agents still can't reach anything but the proxy. Fefe-review
+  (2026-04-21) called out `HTTPS_PROXY`-only as porous against any
+  library that doesn't honor the env var (curl subprocess, explicit
+  `proxies={}` in requests, …).
+
+- **Move `ANTHROPIC_TOKEN` out of proxy-container env.** Today the real
+  OAuth token lives in the proxy container as `ANTHROPIC_TOKEN` env.
+  Environment is visible to anything in the same process tree and shows
+  up in container-introspection APIs (`docker inspect`, any sidecar
+  with the proxy PID namespace). Strictly better: bind-mount a tmpfs
+  file (0400, owned by the proxy uid) with the token and have the
+  addon read it at startup. Same trust properties, smaller exposure
+  surface, less grep-able. Fefe-review (2026-04-21). Small refactor in
+  `pangolin_egress.py` + `_ensure_proxy_running`.
+
 - **PR-feedback Phase 2: inline review comments + thread resolution.**
   Phase 1 (merged) handles PR-level comments. Inline review comments
   (attached to a file/line) and the review-state machinery (CHANGES_REQUESTED
