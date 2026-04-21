@@ -1996,10 +1996,14 @@ class CycleRunner:
 
 
 def run_cycle() -> None:
-    """Entry point — runs one full cycle, then one software task if queued."""
+    """Entry point — runs one full cycle, then the follow-up phases:
+    PR-feedback (address owner comments on open pangolin PRs) and
+    software-task pickup. Feedback runs first so iteration on existing
+    review threads has first dibs on the cycle budget."""
     CycleRunner().run()
-    # _commit() already returns us to main. Pick up one software ticket if any.
-    from pangolin import software
+    # _commit() already returns us to main.
+    from pangolin import pr_feedback, software
+    pr_feedback.run()
     software.run()
 
 
