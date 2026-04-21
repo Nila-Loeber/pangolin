@@ -464,6 +464,14 @@ def _build_mounts(mode: "Mode") -> list[str]:
         host_path = (REPO / p.rstrip("/")).resolve()
         if not host_path.exists():
             host_path.mkdir(parents=True, exist_ok=True)
+        # gVisor's gofer-9p doesn't pass through host UIDs — bind-mounted
+        # directories appear root-owned inside the container regardless of
+        # host ownership. Set 0o777 so the agent (running as container's
+        # uid 1000, mismatched with host owner) can still write. The
+        # writable_path is intentionally a write zone for this mode, so
+        # making it world-writable on host doesn't broaden the actual
+        # security model — only the agent + mode owner ever write here.
+        host_path.chmod(0o777)
         host = str(host_path)
         cont = f"/work/{p.rstrip('/')}"
         mounts += ["-v", f"{host}:{cont}:rw"]
