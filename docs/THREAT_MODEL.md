@@ -109,13 +109,21 @@ Only `api.anthropic.com` is MITM'd.
   hook strips any incoming `Authorization` header and re-injects
   `Bearer <real-token>` for `api.anthropic.com`. `/proc/self/environ`
   inside an agent is empty of credentials. Tests: `TestMitmPhaseA`.
-- **Phase B — server-side-tool block.** Every `POST /v1/messages` body
-  is parsed; requests whose `tools[]` contain a typed entry (Anthropic
-  server-side tools like `web_fetch`, `web_search`, `code_execution`)
-  are rejected with a synthetic 403. Custom tools (`{name, description,
-  input_schema}` — no `type` discriminator) pass through. Closes the
-  api.anthropic.com-as-exfil-channel vector. Starting allowlist is
-  empty. Tests: `TestMitmPhaseB`.
+- **Phase B — endpoint allowlist + server-side-tool block.** Access to
+  `api.anthropic.com` is restricted at two levels. (i) *Endpoint
+  allowlist*: only `POST /v1/messages` is permitted; any other method
+  or path (`/v1/messages/batches`, `/v1/messages/count_tokens`, future
+  beta endpoints, org-scoped paths, …) gets a 403 **before** the token
+  rewrite — so denied requests never bear the real OAuth token.
+  Constant: `ANTHROPIC_ENDPOINT_ALLOWLIST`. (ii) *Body inspection*: on
+  the one allowlisted endpoint, every request body is parsed; requests
+  whose `tools[]` contain a typed entry (Anthropic server-side tools
+  like `web_fetch`, `web_search`, `code_execution`) are rejected.
+  Custom tools (`{name, description, input_schema}` — no `type`
+  discriminator) pass through. `SERVER_TOOL_ALLOWLIST` starts empty.
+  Together these close the api.anthropic.com-as-exfil-channel vector,
+  including the "unknown-endpoint smuggling" variant Phase B alone did
+  not cover. Tests: `TestMitmPhaseB`.
 
 The proxy also generates a runtime CA per startup and publishes the
 public cert to a shared volume (`pangolin-proxy-ca`) that every agent

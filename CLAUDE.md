@@ -72,14 +72,19 @@ Authorization header and injects `Bearer <token>` for
 doesn't short-circuit. Closes the `/proc/self/environ` +
 prompt-injected-Bash exfil path.
 
-**Phase B — server-side-tool block**: the same addon parses every
-`POST /v1/messages` body and rejects any tool entry with a `type`
-field — Anthropic's server-side tools (`web_fetch`, `web_search`,
-`code_execution`, ...) that a compromised agent could use to exfil
-data *through* api.anthropic.com to an attacker-chosen URL. Custom
-tools (`{name, description, input_schema}`) pass through. The
-allowlist (`SERVER_TOOL_ALLOWLIST`) starts empty — no pangolin mode
-needs server-side tools today; research phase 1 uses the CLI's
+**Phase B — endpoint allowlist + server-side-tool block**: the addon
+restricts `api.anthropic.com` at two levels. First,
+`ANTHROPIC_ENDPOINT_ALLOWLIST` — currently `{("POST", "/v1/messages")}`
+— is checked *before* the Authorization rewrite, so denied endpoints
+(batches, count_tokens, future beta paths, org-scoped routes) get a
+403 without ever bearing the real OAuth token upstream. Second, every
+allowlisted request body is parsed and any tool entry with a `type`
+field rejected — Anthropic's server-side tools (`web_fetch`,
+`web_search`, `code_execution`, ...) that a compromised agent could
+use to exfil data *through* api.anthropic.com to an attacker-chosen
+URL. Custom tools (`{name, description, input_schema}`) pass through.
+The allowlist (`SERVER_TOOL_ALLOWLIST`) starts empty — no pangolin
+mode needs server-side tools today; research phase 1 uses the CLI's
 client-side WebSearch/WebFetch, not the API's.
 
 ## Direct (json-schema) modes — post-Q1

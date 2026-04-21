@@ -2,7 +2,8 @@
 
 Two listeners:
   3128 tight  — hostname allowlist (Anthropic+GitHub+PyPI+etc.) +
-                Authorization injection for api.anthropic.com +
+                api.anthropic.com endpoint allowlist (default-deny) +
+                Authorization injection +
                 /v1/messages body inspection (server-side-tool block)
   3129 loose  — any HTTPS host. Used only by research-search WebFetch.
 
@@ -12,12 +13,16 @@ strips whatever Authorization header arrived and injects the real one
 for anthropic-bound requests. /proc/self/environ in the agent therefore
 never holds the token.
 
-Phase B: every POST /v1/messages body is parsed before forwarding. If
-the body's `tools` array contains an entry with a `type` field — i.e.
-an Anthropic server-side tool such as `web_fetch_*` — the request is
-blocked with a synthetic 403. Custom tools (`{name, description,
-input_schema}`) pass through. SERVER_TOOL_ALLOWLIST starts empty: no
-pangolin mode legitimately uses Anthropic-server-side tools today.
+Phase B: api.anthropic.com is additionally restricted at the endpoint
+level — default-deny, with POST /v1/messages the only allowlisted
+entry (ANTHROPIC_ENDPOINT_ALLOWLIST). Denied endpoints get 403 *before*
+token injection, so the real OAuth token never bears a request to an
+un-audited endpoint. For allowlisted endpoints whose body may carry
+tools[], the body is parsed and any entry with a `type` field — i.e.
+an Anthropic server-side tool such as `web_fetch_*` — is blocked with
+a synthetic 403. Custom tools (`{name, description, input_schema}`)
+pass through. SERVER_TOOL_ALLOWLIST starts empty: no pangolin mode
+legitimately uses Anthropic-server-side tools today.
 
 Fail-secure: any unhandled exception in the addon kills the request
 (mitmproxy default). With mitmproxy on the only egress path and
@@ -69,6 +74,17 @@ ANTHROPIC_TOKEN = os.environ.get("ANTHROPIC_TOKEN", "")
 # server-side tool.
 SERVER_TOOL_ALLOWLIST: set[str] = set()
 
+# Endpoints permitted on api.anthropic.com. Default-deny: any
+# (method, path) combination not in this set gets a 403 *before* we
+# inject the real OAuth token. Pangolin's only legitimate Anthropic
+# traffic today is the messages API; batch/count_tokens/beta paths are
+# unused and therefore not trusted. Adding an entry here is a
+# security-relevant change (expands the token-bearing endpoint
+# surface) and must be reviewed.
+ANTHROPIC_ENDPOINT_ALLOWLIST: set[tuple[str, str]] = {
+    ("POST", "/v1/messages"),
+}
+
 # Where mitmproxy keeps its CA (configured via --set confdir below).
 CA_CONFDIR = Path("/etc/mitmproxy")
 SHARED_CA_PATH = Path("/shared/proxy-ca.crt")
@@ -78,6 +94,21 @@ def _is_messages_post(method: str, path: str) -> bool:
     if method != "POST":
         return False
     return path.split("?", 1)[0].rstrip("/").endswith("/v1/messages")
+
+
+def _endpoint_allowed(method: str, path: str) -> bool:
+    """Default-deny match against ANTHROPIC_ENDPOINT_ALLOWLIST.
+
+    Path is normalised: query string stripped, trailing slash stripped.
+    Suffix-match on `endswith` because api.anthropic.com paths may be
+    served under arbitrary prefixes in future (versioned hosts, org-
+    scoped paths); we match on the canonical last segment.
+    """
+    normalized = path.split("?", 1)[0].rstrip("/")
+    return any(
+        method == m and normalized.endswith(suffix)
+        for m, suffix in ANTHROPIC_ENDPOINT_ALLOWLIST
+    )
 
 
 def _block(reason: str) -> http.Response:
@@ -131,13 +162,27 @@ class PangolinEgress:
         """Only api.anthropic.com (and disallowed-host MITM survivors) reach
         this hook — everything else was spliced in tls_clienthello."""
         host = flow.request.pretty_host
+        method = flow.request.method
+        path = flow.request.path
 
         if host != ANTHROPIC_HOST:
             log.warning(
                 "BLOCK tight %s %s — host not in allowlist",
-                flow.request.method, flow.request.url,
+                method, flow.request.url,
             )
             flow.response = _block(f"host {host!r} not in tight allowlist")
+            return
+
+        # Endpoint-level default-deny. Runs *before* the Authorization
+        # rewrite so denied endpoints never bear the real OAuth token.
+        if not _endpoint_allowed(method, path):
+            log.warning(
+                "BLOCK tight %s %s — endpoint not in anthropic allowlist",
+                method, flow.request.url,
+            )
+            flow.response = _block(
+                f"endpoint {method} {path.split('?', 1)[0]!r} not in anthropic allowlist"
+            )
             return
 
         # Authorization rewrite. Strip whatever the agent sent (placeholder),
@@ -146,15 +191,15 @@ class PangolinEgress:
         if ANTHROPIC_TOKEN:
             flow.request.headers["Authorization"] = f"Bearer {ANTHROPIC_TOKEN}"
 
-        # /v1/messages body inspection.
-        if _is_messages_post(flow.request.method, flow.request.path):
+        # Phase B body inspection for messages-family endpoints.
+        if _is_messages_post(method, path):
             ok, reason = _validate_messages_body(flow.request.content or b"")
             if not ok:
                 log.warning("BLOCK %s — %s", flow.request.url, reason)
                 flow.response = _block(reason)
                 return
 
-        log.info("PASS tight %s %s", flow.request.method, flow.request.url)
+        log.info("PASS tight %s %s", method, flow.request.url)
 
 
 def _validate_messages_body(body: bytes) -> tuple[bool, str]:

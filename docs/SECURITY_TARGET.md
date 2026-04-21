@@ -211,13 +211,27 @@ enforcing module and the asserting test class from `tests/test_security.py`.
   `tools.ToolExecutor`.
   *Evidence:* `TestSfrTool`.
 
-- **SFR.TOOL.2 — No server-side tools.**
-  Every `POST /v1/messages` body is parsed at the egress proxy; any
+- **SFR.TOOL.2a — Anthropic endpoint allowlist (default-deny).**
+  Only `(POST, /v1/messages)` is permitted on `api.anthropic.com`.
+  Every other method/path combination is rejected with a 403 *before*
+  the Authorization rewrite, so denied requests never bear the real
+  OAuth token upstream. Prevents exfil via `/v1/messages/batches`,
+  `/v1/messages/count_tokens`, or any future Anthropic endpoint
+  pangolin has not audited. Expanding the allowlist is a
+  security-relevant change.
+  *Enforcing code:* `pangolin_egress.ANTHROPIC_ENDPOINT_ALLOWLIST`,
+  `_endpoint_allowed`, `PangolinEgress.request`.
+  *Evidence:* `TestMitmPhaseB::test_anthropic_endpoint_allowlist_default_deny`,
+  `TestMitmPhaseB::test_endpoint_deny_precedes_token_injection`.
+
+- **SFR.TOOL.2b — No server-side tools on allowlisted endpoint.**
+  For every `POST /v1/messages` body reaching the proxy, any
   tool entry with a `type` field is rejected (403) unless listed in
   `SERVER_TOOL_ALLOWLIST` (default empty).
   *Enforcing code:* `pangolin_egress.PangolinEgress.request`,
   `_validate_messages_body`.
-  *Evidence:* `TestMitmPhaseB`.
+  *Evidence:* `TestMitmPhaseB::test_addon_validates_messages_body`,
+  `TestMitmPhaseB::test_server_tool_allowlist_empty_by_default`.
 
 ### 5.2 Filesystem scope (FDP_IFC-style)
 
@@ -380,7 +394,7 @@ Mapping of each security-functional area to the enforcing components.
 
 | Area | Host-side | Proxy-side | Container-side |
 |---|---|---|---|
-| Tool control | `tools.ToolExecutor`, `orchestrate.spawn_agent_container_tooluse` `--allowedTools` | `_validate_messages_body` (Phase B) | CLI's own allowed-tools flag honoring |
+| Tool control | `tools.ToolExecutor`, `orchestrate.spawn_agent_container_tooluse` `--allowedTools` | `_endpoint_allowed` (endpoint allowlist), `_validate_messages_body` (Phase B body check) | CLI's own allowed-tools flag honoring |
 | FS scope | `_build_mounts`, `ToolConfig.check_*` | — | `--read-only`, bind-mounts |
 | Trifecta | `modes.yml` + `_validate_invariants`, `_phase_research` split | — | Image choice (llm vs software vs bash) |
 | Egress allowlist | `_ensure_proxy_running`, `_proxy_url`, `HTTPS_PROXY` in `_base_docker_flags` | `tls_clienthello`, `request` host check | `NODE_EXTRA_CA_CERTS`, no direct egress |
@@ -409,7 +423,7 @@ together with BACKLOG.md.
 | R.SUPPLY_APK | Alpine apk pins are mutable; `ca-certificates` already rotated once. | Image reproducibility on BACKLOG (renovate + digest-pinning). |
 | R.SUPPLY_SBOM | No published SBOM, no SCA run in CI. | On BACKLOG (CycloneDX + image scanner). |
 | R.HOST_EGRESS_BYPASS | iptables REJECT was removed 2026-04-21 (broke GH-Actions log uploads); only `HTTPS_PROXY` export remains. A raw-socket library that ignores proxy env would bypass. | Accepted for single-user alpha. Assumption A.INFRA (honest pip/gh/httpx) covers this in-scope. |
-| R.CLI_TRUST | The claude CLI's adherence to `--allowedTools ""` is an assumption (A.INFRA). | Defense-in-depth: mount-based FS scope + Phase B server-tool block catches this class. |
+| R.CLI_TRUST | The claude CLI's adherence to `--allowedTools ""` is an assumption (A.INFRA). | Defense-in-depth: mount-based FS scope (tools that reach outside the mount can't see targets), egress hostname allowlist (WebFetch to attacker host blocked), Anthropic endpoint allowlist (CLI can't smuggle via non-`/v1/messages` paths), and Phase B server-tool block (typed tools rejected on the one allowed endpoint). |
 | R.TIMEOUT | Software-mode 180 s timeout truncates long tool-use loops. | Not a security risk — kills wedged agents. PR-feedback loop is the continuation mechanism. |
 | R.PR_INLINE | Inline review-thread comments not yet consumed by the PR-feedback loop. | Phase 2 on BACKLOG; no security risk, only missed conversational signal. |
 | R.MULTI_TENANT | FS mount model assumes single-writer Owner. | Out of scope (assumption A.OWNER). Shared wikis would require a new ST. |

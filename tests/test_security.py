@@ -384,6 +384,31 @@ class TestMitmPhaseB:
         assert "tools" in code
         assert "ttype" in code  # the discriminator we block on
 
+    def test_anthropic_endpoint_allowlist_default_deny(self):
+        """Default-deny on api.anthropic.com: only POST /v1/messages is
+        allowlisted. Closes the exfil path via /v1/messages/batches,
+        /v1/messages/count_tokens, or future beta endpoints nobody
+        has audited yet."""
+        code = (REPO/"src/pangolin/pangolin_egress.py").read_text()
+        assert "ANTHROPIC_ENDPOINT_ALLOWLIST" in code
+        assert '("POST", "/v1/messages")' in code
+        # Helper exists and is referenced by request()
+        assert "_endpoint_allowed" in code
+
+    def test_endpoint_deny_precedes_token_injection(self):
+        """A denied endpoint must be blocked before the Authorization
+        rewrite. Otherwise the 403 would still carry our real OAuth
+        token upstream, defeating the purpose of endpoint-scoping."""
+        code = (REPO/"src/pangolin/pangolin_egress.py").read_text()
+        endpoint_check = code.find("_endpoint_allowed(method, path)")
+        auth_inject = code.find('flow.request.headers.pop("Authorization"')
+        assert endpoint_check != -1, "endpoint check not present in request()"
+        assert auth_inject != -1, "auth rewrite not present in request()"
+        assert endpoint_check < auth_inject, (
+            "endpoint allowlist check must precede token injection so "
+            "denied endpoints never bear the real OAuth token"
+        )
+
 
 class TestAtomicDeploy:
     """Package-as-SSoT: pip install updates behavior atomically across wikis."""
