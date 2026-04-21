@@ -1,4 +1,4 @@
-"""Pangolin CLI — `pangolin init|run|harden-egress|canary-update|version`."""
+"""Pangolin CLI — `pangolin init|run|harden-egress|version`."""
 
 from __future__ import annotations
 
@@ -34,12 +34,6 @@ def main(argv: list[str] | None = None) -> int:
         help="Bring up the egress proxy + lock host egress via iptables. "
              "Workflow step before `pangolin run`.",
     )
-    sub.add_parser(
-        "canary-update",
-        help="Refresh this wiki's workflow shim from the installed package, "
-             "dispatch build-agent-images upstream + agent-cycle here, and "
-             "wait for both. For the owner's 'update und teste' flow.",
-    )
     sub.add_parser("version", help="Print the installed version.")
 
     args = parser.parse_args(argv)
@@ -55,9 +49,6 @@ def main(argv: list[str] | None = None) -> int:
         from pangolin.orchestrate import harden_egress
         harden_egress()
         return 0
-    if args.cmd == "canary-update":
-        from pangolin.canary import run as canary_run
-        return canary_run()
     if args.cmd == "version":
         from pangolin import __version__
         print(__version__)

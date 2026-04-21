@@ -45,14 +45,6 @@ def init_repo(
     for src in paths.default_workflows_dir().glob("*.yml"):
         actions.append(_copy(src, root / ".github" / "workflows" / src.name, force=force))
 
-    # Claude Code skills: atomically-deployed natural-language shortcuts the
-    # owner uses against the wiki-local agent. Today: `canary-update`.
-    skills_src = paths.default_claude_skills_dir()
-    if skills_src.is_dir():
-        for src in skills_src.rglob("SKILL.md"):
-            rel = src.relative_to(skills_src)
-            actions.append(_copy(src, root / ".claude" / "skills" / rel, force=force))
-
     # Empty directory markers
     for d in ("wiki/fragment", "notes/ideas", "drafts", "content"):
         gk = root / d / ".gitkeep"
