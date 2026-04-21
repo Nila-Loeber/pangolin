@@ -46,9 +46,15 @@ Set these **repository secrets** in GitHub (Settings → Secrets and variables
 - `ANTHROPIC_API_KEY` *(optional)* — API-key fallback if the OAuth path
   isn't available. Leave unset if you're using the subscription.
 
+Enable **one repo setting** (Settings → Actions → General → Workflow
+permissions): ✅ **"Allow GitHub Actions to create and approve pull
+requests"**. Without this, cycles run but `gh pr create` fails with
+`GitHub Actions is not permitted to create or approve pull requests` and
+your cycle branches end up orphaned.
+
 The default `GITHUB_TOKEN` provided by Actions is enough for everything else
-(repo read/write, PRs, issues, GHCR image pulls — the pangolin agent images
-are public).
+(repo read/write, issues, GHCR image pulls — the pangolin agent images are
+public).
 
 Then dispatch `.github/workflows/agent-cycle.yml` from the **Actions** tab
 (workflow_dispatch). The cycle posts a summary comment on the sentinel issue
