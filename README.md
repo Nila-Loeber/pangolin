@@ -63,8 +63,7 @@ and opens a PR with its changes when there's content to commit.
 ### For AI agents: installing pangolin on behalf of an owner
 
 > If you are an AI agent reading this because an owner asked you to install
-> pangolin into their wiki repo, follow these condensed steps. The full
-> prompt with edge-case coverage is in [`docs/deploy-prompt.md`](docs/deploy-prompt.md).
+> pangolin into their wiki repo, follow these steps exactly.
 
 1. `pip install git+https://github.com/Nila-Loeber/pangolin.git@main`; verify `pangolin version`.
 2. From the wiki repo root: `pangolin init` — **not** `--force`; pass `--with-wiki` **only** if `wiki/` is empty.
