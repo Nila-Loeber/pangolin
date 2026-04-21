@@ -48,6 +48,14 @@ jobs:
           git config user.email "cycle-agent@users.noreply.github.com"
 
       - name: Harden egress (proxy + iptables)
+        # CLAUDE_CODE_OAUTH_TOKEN is required here, not just in Run cycle:
+        # this step starts the egress proxy sidecar, and the proxy needs
+        # the real OAuth token in its own env so it can inject the
+        # Authorization header for /v1/messages calls (Phase A). Without
+        # it, agent containers send only the placeholder token and
+        # Anthropic rejects with "Not logged in".
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: pangolin harden-egress
 
       - name: Run cycle

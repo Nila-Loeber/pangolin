@@ -387,6 +387,16 @@ def _ensure_proxy_running() -> None:
         )
         log(f"  starting egress proxy ({PROXY_IMAGE} on {PROXY_NETWORK})")
         token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
+        if not token:
+            # Starting the proxy without a token means Phase A Authorization
+            # injection is a no-op — agents will send the placeholder and
+            # Anthropic will reject with "Not logged in". Fail loudly rather
+            # than silently producing an unusable proxy.
+            raise RuntimeError(
+                "_ensure_proxy_running: CLAUDE_CODE_OAUTH_TOKEN empty — "
+                "proxy would start without the Authorization header it's "
+                "supposed to inject. Ensure the caller has the token in env."
+            )
         subprocess.run(
             ["docker", "run", "-d", "--rm",
              "--name", PROXY_NAME,
