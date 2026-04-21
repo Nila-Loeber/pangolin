@@ -126,10 +126,16 @@ pangolin init                  # scaffold config into current repo (new wiki)
 pangolin refresh-workflows     # re-sync .github/workflows/*.yml from the
                                # installed package (existing wiki, after a
                                # pip upgrade that ships a new shim)
-pangolin run                   # execute one cycle (+ one software task if queued,
-                               # + one PR-feedback iteration if there's an owner
-                               # comment on an open pangolin PR)
-pangolin harden-egress         # workflow-only: start proxy + export HTTPS_PROXY
+pangolin cycle                 # workflow entry point: harden egress + run one
+                               # cycle (+ one software task if queued, + one
+                               # PR-feedback iteration if there's an owner
+                               # comment on an open pangolin PR). The agent-
+                               # cycle workflow shim calls this.
+pangolin run                   # cycle only, no egress setup. Use when the
+                               # proxy is already up (tests, local tinkering).
+pangolin harden-egress         # start proxy + export HTTPS_PROXY only. Split
+                               # out for flexibility; `pangolin cycle` is the
+                               # normal entry point.
 pangolin version               # print installed version
 ```
 
