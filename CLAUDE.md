@@ -21,6 +21,7 @@ The `tests/test_security.py` suite is the single source of truth for the securit
   - `modes.py` — modes.yml loader + invariant validator + JSON schemas for direct-mode agents
   - `providers.py` — anthropic SDK wrapper (in-process API-key path)
   - `software.py` — software-task-per-cycle pickup (OAuth → `pangolin-agent-software` via CLI, or API-key → in-process SDK)
+  - `pr_feedback.py` — PR-feedback loop: picks up owner-authored comments on pangolin-authored open PRs and runs software-mode against the existing branch
   - `scaffold.py` — `pangolin init` implementation
   - `default_config/` — runtime SSoT for modes/docs/validator/workflow shim.
     Loaded via `paths.resolve_config()`; only the workflow shim + wiki
@@ -88,6 +89,23 @@ All knowledge-work modes have moved off container tool-use to direct json-schema
 - **triage**, **summary**, **self-improve**, **wiki-index** → direct (unchanged)
 
 Only **software** remains container tool-use (inherent — needs iterative bash + code edits).
+
+## PR-feedback loop
+
+After the main cycle + software-task pickup, `pr_feedback.run()` closes
+the conversational loop on PRs. For every open pangolin-authored PR
+(matched by `AGENT_MARKER` in the body), it reads comments newer than
+the latest cycle-agent commit on the branch — the watermark. Owner-
+authored ones (strict per-comment `_is_owner_comment`) get fed to
+software-mode with a DATA-not-instructions preamble; the agent commits
+on the same branch. One comment per cycle, oldest first. Inference
+filter: a progress reply + push only happens if a new diff was actually
+produced. Self-loop guard: our progress reply carries `AGENT_MARKER`
+and is therefore invisible to the next cycle's watermark filter.
+
+No label, no magic keyword — a fresh owner comment on a pangolin PR is
+the trigger. Phase 2 work (not yet): inline review-thread comments and
+GraphQL thread resolution.
 
 ## modes.yml invariants
 
