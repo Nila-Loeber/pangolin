@@ -81,10 +81,12 @@ modes:
   thinking:
     description: "Analysis, synthesis, structuring, cross-links — json-schema output (also used by wiki-ingest phase)"
     provider: anthropic
-    # Opus on subscription = no per-token penalty, and the better reasoning
-    # genuinely helps wiki-ingest synthesis + thinking-mode analysis. For
-    # API-key deployments, override to sonnet via PANGOLIN_MODELS profile.
-    model: claude-opus-4-7
+    # Sonnet for the speed/quality sweet spot on direct json-schema modes:
+    # one API call, no iteration, response generation dominates wall time.
+    # Sonnet is ~2× faster than Opus on equivalent prose-synthesis tasks
+    # while still high-quality enough for wiki/notes ingestion.
+    # Override via PANGOLIN_MODELS if a heavy synthesis run wants Opus.
+    model: claude-sonnet-4-6
     execution: direct
     network: false
     code_execution: false
@@ -103,8 +105,9 @@ modes:
   writing:
     description: "Produce prose drafts: json-schema output, executor writes files"
     provider: anthropic
-    # Opus for prose quality (ok on subscription, override to sonnet for API-key).
-    model: claude-opus-4-7
+    # Sonnet for direct json-schema speed (see thinking-mode rationale).
+    # Drafts are rough-cut prose anyway — owner edits for tone post-merge.
+    model: claude-sonnet-4-6
     execution: direct
     network: false
     code_execution: false
