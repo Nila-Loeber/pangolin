@@ -138,14 +138,35 @@ class TestSfrFlm:
 
 class TestHardening:
     def test_workflow_is_thin_shim(self):
-        """agent-cycle.yml is a thin shim — it calls `pangolin harden-egress`
-        + `pangolin run`, nothing more. All orchestration logic lives in the
-        pip package so updates are atomic across wiki repos."""
+        """agent-cycle.yml is a thin shim — it pulls images, pip-installs
+        pangolin, then hands off to `pangolin cycle`. All orchestration
+        logic lives in the pip package so updates are atomic across wiki
+        repos — a wiki only has to re-run `pangolin refresh-workflows`
+        when the shim itself changes (rare), not for behavior bumps."""
         wf = read(REPO/"src/pangolin/default_config/workflows/agent-cycle.yml")
-        assert "pangolin harden-egress" in wf
-        assert "pangolin run" in wf
+        assert "pangolin cycle" in wf
         assert "pangolin-egress-proxy" in wf  # image pulled in setup step
         assert "harden-runner" not in wf
+
+    def test_workflow_uses_job_level_secret_env(self):
+        """All secrets live at job level (once), not per-step. Per-step env
+        blocks are a foot-gun: a new step that forgets to duplicate the
+        block silently drops secrets. That shipped once as the
+        `harden-egress` step without CLAUDE_CODE_OAUTH_TOKEN — proxy
+        started with no token, Authorization injection was a no-op,
+        Anthropic rejected every call. Guard against regression."""
+        import re
+        wf = read(REPO/"src/pangolin/default_config/workflows/agent-cycle.yml")
+        # Every secret used in the shim must be referenced exactly once
+        # (in the job-level env block) — except GITHUB_TOKEN which also
+        # appears inline for `docker login ghcr.io`.
+        for secret in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"):
+            refs = len(re.findall(rf"secrets\.{secret}\b", wf))
+            assert refs == 1, (
+                f"{secret} referenced {refs}x in agent-cycle.yml; expected 1 "
+                f"(job-level env block). Per-step env duplication is the "
+                f"regression this test guards against."
+            )
     def test_egress_hardening_lives_in_package(self):
         """The HTTPS_PROXY export logic lives in orchestrate.harden_egress()
         so shipping a new egress policy requires only a pip package bump.
