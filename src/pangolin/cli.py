@@ -28,6 +28,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Also seed wiki/ with index.md, log.md, and ref/project/draft/ directories.",
     )
 
+    sub.add_parser(
+        "refresh-workflows",
+        help="Overwrite .github/workflows/*.yml from package defaults. "
+             "Use after bumping the installed pangolin package to pick up "
+             "new workflow-shim changes without rewriting wiki content.",
+    )
     sub.add_parser("run", help="Run one full conversational cycle (includes one software task if queued).")
     sub.add_parser(
         "harden-egress",
@@ -41,6 +47,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "init":
         from pangolin.scaffold import init_repo
         return init_repo(force=args.force, with_wiki=args.with_wiki)
+    if args.cmd == "refresh-workflows":
+        from pangolin.scaffold import refresh_workflows
+        return refresh_workflows()
     if args.cmd == "run":
         from pangolin.orchestrate import run_cycle
         run_cycle()

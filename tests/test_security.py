@@ -143,27 +143,25 @@ class TestHardening:
         assert "pangolin-egress-proxy" in wf  # image pulled in setup step
         assert "harden-runner" not in wf
     def test_egress_hardening_lives_in_package(self):
-        """The iptables + HTTPS_PROXY logic moved from the workflow yml into
-        orchestrate.harden_egress() so shipping a new egress policy requires
-        only a pip package bump."""
+        """The HTTPS_PROXY export logic lives in orchestrate.harden_egress()
+        so shipping a new egress policy requires only a pip package bump.
+
+        The iptables REJECT that used to be part of harden_egress was
+        removed 2026-04-21: it blocked GH Actions log-blob uploads
+        (Azure Storage hosts that /meta doesn't publish) and the cost
+        exceeded the DiD benefit (the REJECT only added protection
+        against raw-socket host code; every HTTPS_PROXY-respecting
+        library was already going through the proxy)."""
         c = read(REPO/"src/pangolin/orchestrate.py")
         assert "def harden_egress" in c
-        assert "iptables" in c
         assert "HTTPS_PROXY" in c
-
-    def test_harden_egress_allowlists_gh_actions_cidrs(self):
-        """harden_egress must fetch api.github.com/meta .actions[] and
-        allowlist those CIDRs on TCP/443 before applying REJECT — otherwise
-        the runner can't phone home and the job silent-hangs. /meta has
-        ~5000 v4 CIDRs so an ipset is used instead of per-CIDR rules."""
-        c = read(REPO/"src/pangolin/orchestrate.py")
-        assert "_fetch_gh_actions_cidrs" in c
-        assert "api.github.com/meta" in c
-        assert "ipset" in c
-        assert "hash:net" in c
-        # --dport 443 narrows DiD: GH CIDRs cover millions of IPs; don't
-        # let them be an exfil pipe on arbitrary ports.
-        assert '"--dport", "443"' in c
+        # Negative invariant: host iptables REJECT was removed (breaks
+        # GH Actions log-blob uploads). Re-adding requires first
+        # whitelisting *.blob.core.windows.net or accepting broken logs.
+        assert '"iptables"' not in c, (
+            "iptables rule installation reintroduced in harden_egress — "
+            "see removal rationale in its docstring before doing this"
+        )
 
     @pytest.mark.sfr("FLM.1")
     def test_iteration_limit(self):

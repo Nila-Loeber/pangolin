@@ -22,6 +22,24 @@ def _copy(src: Path, dst: Path, *, force: bool) -> str:
     return f"wrote {dst}"
 
 
+def refresh_workflows(*, cwd: Path | None = None) -> int:
+    """Overwrite `.github/workflows/*.yml` from the package defaults.
+
+    Narrow counterpart to `init --force`: touches only the workflow shim
+    files, which are the ones that drift whenever the package ships a
+    new cycle step or env var. Owner-customized files (wiki/, content/,
+    .ingest-watermark, modes.override.yml) are never touched.
+    """
+    root = (cwd or Path.cwd()).resolve()
+    actions: list[str] = []
+    for src in paths.default_workflows_dir().glob("*.yml"):
+        actions.append(_copy(src, root / ".github" / "workflows" / src.name, force=True))
+    for a in actions:
+        print(a)
+    print("\nReview the diff and commit. Nothing else was touched.")
+    return 0
+
+
 def init_repo(
     *, force: bool = False, with_wiki: bool = False, cwd: Path | None = None
 ) -> int:
@@ -34,6 +52,10 @@ def init_repo(
     Wiki repos may override any package default by checking in a same-named
     copy at the same relative path (see paths.resolve_config); `pangolin
     init` does not scaffold these to avoid creating silent drift.
+
+    For an existing repo that only wants the workflow shim refreshed, use
+    `pangolin refresh-workflows` — `init --force` also rewrites
+    `.ingest-watermark` and `wiki/SCHEMA.md`.
     """
     root = (cwd or Path.cwd()).resolve()
     actions: list[str] = []

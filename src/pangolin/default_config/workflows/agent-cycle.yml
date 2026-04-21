@@ -1,11 +1,16 @@
 name: agent-cycle
 
-# Thin shim: all behavior lives in the `pangolin` pip package. Updates
-# happen atomically when the package version below changes — wiki repos
-# do not mirror orchestration logic. Only this shim is checked in.
+# Thin shim: all behavior lives in the `pangolin` pip package. Only the
+# `env.PANGOLIN_REF` below pins behavior — it's used for BOTH the pip
+# install ref AND the GHCR image tag, so agent-image + orchestrator
+# always match. Bump PANGOLIN_REF to deploy a new version.
 #
-# To upgrade behavior: bump the `@<ref>` in the `pip install` line below
-# (or pin to @main for continuous deployment).
+# - `main` (continuous): pip @main + docker :latest. Always tracks upstream.
+#   Good for test/canary wikis, risky for prod because upstream rebuilds
+#   hit you immediately.
+# - `<commit-sha>` (pinned): pip @<sha> + docker :<sha>. Pin to a SHA
+#   you've validated on a canary; prod wiki stays on that SHA until you
+#   explicitly bump it.
 
 on:
   # schedule:
@@ -22,6 +27,9 @@ permissions:
   pull-requests: write
   packages: read
 
+env:
+  PANGOLIN_REF: main
+
 jobs:
   cycle:
     runs-on: ubuntu-latest
@@ -33,6 +41,7 @@ jobs:
       - name: Install gVisor + pull agent images + install pangolin
         run: |
           echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+          if [ "$PANGOLIN_REF" = "main" ]; then IMG_TAG=latest; else IMG_TAG=$PANGOLIN_REF; fi
           curl -fsSL https://gvisor.dev/archive.key | sudo gpg --dearmor -o /usr/share/keyrings/gvisor.gpg
           echo "deb [signed-by=/usr/share/keyrings/gvisor.gpg] https://storage.googleapis.com/gvisor/releases release main" \
             | sudo tee /etc/apt/sources.list.d/gvisor.list
@@ -40,10 +49,10 @@ jobs:
           sudo runsc install && sudo systemctl reload docker
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
           for img in pangolin-agent-bash pangolin-agent-llm pangolin-agent-software pangolin-egress-proxy; do
-            docker pull ghcr.io/nila-loeber/$img:latest
-            docker tag ghcr.io/nila-loeber/$img:latest $img:latest
+            docker pull ghcr.io/nila-loeber/$img:$IMG_TAG
+            docker tag ghcr.io/nila-loeber/$img:$IMG_TAG $img:latest
           done
-          pip install --quiet git+https://github.com/Nila-Loeber/pangolin.git@main
+          pip install --quiet git+https://github.com/Nila-Loeber/pangolin.git@$PANGOLIN_REF
           git config user.name "cycle-agent"
           git config user.email "cycle-agent@users.noreply.github.com"
 

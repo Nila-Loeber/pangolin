@@ -21,13 +21,11 @@ Environment:
 
 from __future__ import annotations
 
-import ipaddress
 import json
 import os
 import re
 import subprocess
 import sys
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -2019,116 +2017,31 @@ def run_cycle() -> None:
 
 # ── Egress hardening (runs as workflow step, before `pangolin run`) ──
 
-_IPTABLES_STATIC_RULES = [
-    # Allow ongoing connections.
-    ["iptables", "-I", "OUTPUT", "1", "-m", "state", "--state",
-     "ESTABLISHED,RELATED", "-j", "ACCEPT"],
-    # Loopback.
-    ["iptables", "-I", "OUTPUT", "2", "-o", "lo", "-j", "ACCEPT"],
-    # Docker-internal networks (proxy container lives here).
-    ["iptables", "-A", "OUTPUT", "-d", "172.16.0.0/12", "-j", "ACCEPT"],
-    # Runner-local (GH Actions private net) + Azure metadata link-local.
-    ["iptables", "-A", "OUTPUT", "-d", "10.0.0.0/8", "-j", "ACCEPT"],
-    ["iptables", "-A", "OUTPUT", "-d", "169.254.0.0/16", "-j", "ACCEPT"],
-    # DNS (UDP + TCP).
-    ["iptables", "-A", "OUTPUT", "-p", "udp", "--dport", "53", "-j", "ACCEPT"],
-    ["iptables", "-A", "OUTPUT", "-p", "tcp", "--dport", "53", "-j", "ACCEPT"],
-]
-
-_IPTABLES_REJECT_RULE = ["iptables", "-A", "OUTPUT", "-j", "REJECT"]
-
-
-def _fetch_gh_actions_cidrs() -> list[str]:
-    """Fetch GH Actions runner control-plane CIDRs from api.github.com/meta.
-
-    Published so that self-hosted egress filters can allowlist the runner's
-    upstream. Called BEFORE iptables REJECT is applied so the request itself
-    isn't blocked.
-    """
-    with urllib.request.urlopen("https://api.github.com/meta", timeout=10) as r:
-        meta = json.loads(r.read())
-    cidrs = meta.get("actions", [])
-    # Deduplicate IPv4 only — iptables-nft handles v6 via ip6tables; runner
-    # upstream is v4 today. Validate each range; skip anything malformed.
-    out = []
-    for c in cidrs:
-        try:
-            net = ipaddress.ip_network(c, strict=False)
-        except ValueError:
-            continue
-        if isinstance(net, ipaddress.IPv4Network):
-            out.append(str(net))
-    return out
-
-
-_GH_ACTIONS_IPSET = "pangolin-gh-actions"
-
-
-def _apply_gh_actions_ipset(cidrs: list[str]) -> None:
-    """Create/refresh an ipset containing GH Actions CIDRs.
-
-    The `actions` field of api.github.com/meta has ~5000 v4 CIDRs — far too
-    many for per-CIDR iptables rules. An ipset with hash:net type gives
-    O(1) lookup and one iptables rule suffices.
-    """
-    subprocess.run(["sudo", "apt-get", "install", "-y", "-qq", "ipset"], check=True)
-    # Build in a temp set, then swap — atomic update, no rule-load race.
-    tmp = f"{_GH_ACTIONS_IPSET}-new"
-    subprocess.run(["sudo", "ipset", "destroy", tmp], check=False)
-    subprocess.run(
-        ["sudo", "ipset", "create", tmp, "hash:net", "family", "inet",
-         "maxelem", str(max(65536, len(cidrs) * 2))],
-        check=True,
-    )
-    restore = "".join(f"add {tmp} {c}\n" for c in cidrs)
-    subprocess.run(["sudo", "ipset", "restore"], input=restore, text=True, check=True)
-    exists = subprocess.run(
-        ["sudo", "ipset", "list", "-n", _GH_ACTIONS_IPSET],
-        capture_output=True, text=True,
-    )
-    if exists.returncode == 0:
-        subprocess.run(["sudo", "ipset", "swap", tmp, _GH_ACTIONS_IPSET], check=True)
-        subprocess.run(["sudo", "ipset", "destroy", tmp], check=True)
-    else:
-        subprocess.run(["sudo", "ipset", "rename", tmp, _GH_ACTIONS_IPSET], check=True)
-
-
 def harden_egress() -> None:
-    """Bring up the egress proxy and lock host egress to it via iptables.
+    """Bring up the egress proxy and export HTTPS_PROXY to $GITHUB_ENV.
 
     Exported as `pangolin harden-egress` — the agent-cycle workflow calls
     this before `pangolin run` so that:
-      - the pangolin-egress-proxy sidecar is running
-      - host OUTPUT traffic is REJECTed unless it's loopback, Docker-internal,
-        DNS, runner-private, or GH-Actions-control-plane (fetched dynamically
-        from api.github.com/meta — defense-in-depth behind the proxy's
-        hostname allowlist). GH Actions CIDRs live in an ipset because the
-        /meta actions field has thousands of entries.
-      - HTTPS_PROXY is written to $GITHUB_ENV so host `gh`, `pip`, and the
-        SDK fallback path all route through the proxy
+      - the pangolin-egress-proxy sidecar is running (and has the OAuth
+        token in its env so Phase A header injection works).
+      - HTTPS_PROXY / HTTP_PROXY / NO_PROXY are written to $GITHUB_ENV
+        so host `gh`, `pip`, and SDK host-path calls all route through
+        the proxy — subject to its hostname allowlist + Phase A + Phase B.
 
-    Moving this out of the workflow yml keeps the yml a thin shim — any
-    future egress-policy change ships with the pip package, no per-wiki sync.
+    Previously this also installed a host-level iptables REJECT rule as
+    defense-in-depth against host processes that bypass HTTPS_PROXY.
+    Removed 2026-04-21: the REJECT broke GH Actions log-blob uploads
+    (which go to `*.blob.core.windows.net`, not in /meta's allowlist),
+    making cycle failures invisible. The DiD it provided only helped
+    against raw-socket host code — every HTTPS_PROXY-respecting library
+    (pip, gh CLI, httpx, requests, urllib) still goes through the proxy.
+    Cost > benefit for the alpha threat model (single trusted owner).
+
+    If a stricter lockdown is wanted later: narrow iptables to only
+    block non-443 egress (keeps DNS-tunnel defense, keeps 443 open for
+    log uploads) and re-add under a flag.
     """
     _ensure_proxy_running()
-    # Fetch CIDRs BEFORE applying REJECT — the fetch itself needs outbound.
-    # Fail loud if this doesn't work; silent-hang (runner can't phone home)
-    # is worse than a visible failure.
-    gh_actions_cidrs = _fetch_gh_actions_cidrs()
-    log(f"harden-egress: allowlisting {len(gh_actions_cidrs)} GH Actions CIDRs via ipset")
-    _apply_gh_actions_ipset(gh_actions_cidrs)
-
-    for cmd in _IPTABLES_STATIC_RULES:
-        subprocess.run(["sudo", *cmd], check=True)
-    # One rule to allow TCP/443 to any IP in the GH Actions ipset. Narrow DiD:
-    # thousands of IPs allowed, but only on 443, not all ports.
-    subprocess.run(
-        ["sudo", "iptables", "-A", "OUTPUT",
-         "-m", "set", "--match-set", _GH_ACTIONS_IPSET, "dst",
-         "-p", "tcp", "--dport", "443", "-j", "ACCEPT"],
-        check=True,
-    )
-    subprocess.run(["sudo", *_IPTABLES_REJECT_RULE], check=True)
 
     proxy = f"http://{_PROXY_IP}:3128"
     no_proxy = "localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8"
@@ -2138,10 +2051,10 @@ def harden_egress() -> None:
             f.write(f"HTTPS_PROXY={proxy}\n")
             f.write(f"HTTP_PROXY={proxy}\n")
             f.write(f"NO_PROXY={no_proxy}\n")
-        log(f"harden-egress: proxy up at {proxy}, iptables locked, env exported")
+        log(f"harden-egress: proxy up at {proxy}, env exported")
     else:
         # Local invocation (no GH Actions) — just report.
-        log(f"harden-egress: proxy up at {proxy}, iptables locked")
+        log(f"harden-egress: proxy up at {proxy}")
         log(f"  set manually: HTTPS_PROXY={proxy}")
         log(f"  set manually: HTTP_PROXY={proxy}")
         log(f"  set manually: NO_PROXY={no_proxy}")

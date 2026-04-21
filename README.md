@@ -32,63 +32,123 @@ implementation of Karpathy's LLM-wiki pattern, hardened for real use.
 In your wiki repo:
 
 ```bash
-pip install git+https://github.com/Nila-Loeber/pangolin.git@v0.1
+pip install git+https://github.com/Nila-Loeber/pangolin.git@main
 pangolin init
 git add -A && git commit -m "feat: initialize pangolin"
 git push
 ```
 
-Set these GitHub secrets on the repo:
+Set these **repository secrets** in GitHub (Settings → Secrets and variables
+→ Actions):
 
-- `CLAUDE_CODE_OAUTH_TOKEN` — Claude Max subscription token
-  (run `claude setup-token` locally to generate one)
-- `ANTHROPIC_API_KEY` — optional fallback if OAuth is unset
+- `CLAUDE_CODE_OAUTH_TOKEN` — Claude Max subscription token.
+  Run `claude setup-token` locally to generate one.
+- `ANTHROPIC_API_KEY` *(optional)* — API-key fallback if the OAuth path
+  isn't available. Leave unset if you're using the subscription.
 
-Then dispatch `.github/workflows/agent-cycle.yml` from the Actions tab.
+The default `GITHUB_TOKEN` provided by Actions is enough for everything else
+(repo read/write, PRs, issues, GHCR image pulls — the pangolin agent images
+are public).
+
+Then dispatch `.github/workflows/agent-cycle.yml` from the **Actions** tab
+(workflow_dispatch). The cycle posts a summary comment on the sentinel issue
+and opens a PR with its changes when there's content to commit.
 
 ## What `pangolin init` creates
 
 | Path | Purpose |
 |---|---|
-| `modes.yml` | Per-mode permission profiles (network, FS, tools) |
-| `wiki/SCHEMA.md` | Wiki structure conventions |
+| `.github/workflows/agent-cycle.yml` | Thin shim — sole source of behavior pinning (`PANGOLIN_REF`) |
+| `wiki/SCHEMA.md` | Wiki structure conventions (edit freely) |
 | `wiki/fragment/` | Quarantine zone for untrusted research output |
-| `docs/*.md` | Agent SSoT prompts (edit to customize voice/domain) |
-| `.github/workflows/agent-cycle.yml` | Scheduled/dispatch-triggered cycle (also processes one software ticket per run) |
 | `.ingest-watermark` | Fragment-processing cursor |
-| `notes/ideas/`, `drafts/`, `content/` | Content areas |
+| `notes/ideas/`, `drafts/`, `content/` | Content areas (empty directories, kept via `.gitkeep`) |
+
+Everything else — `modes.yml`, `docs/*-agent.md`, validators — lives inside
+the pip package. The wiki repo never mirrors orchestration logic.
+
+**Customizing without fork drift**: to override a package default, check a
+same-named file into your wiki at the same relative path:
+
+- `modes.override.yml` — deep-merged on top of the package `modes.yml`
+  (per-mode field replacement, absent modes unchanged). Example:
+  ```yaml
+  modes:
+    thinking: { model: claude-opus-4-7 }
+    writing:  { model: claude-opus-4-7 }
+  ```
+- `docs/<name>.md` — replaces that specific agent-SSoT doc in full.
+
+## Pinning behavior to a version (prod wikis)
+
+The shim exposes one env var — `PANGOLIN_REF` — that drives BOTH the pip
+install ref AND the GHCR image tag, so agent images and orchestrator code
+always match.
+
+```yaml
+# .github/workflows/agent-cycle.yml
+env:
+  PANGOLIN_REF: main       # continuous — tracks upstream HEAD
+  # PANGOLIN_REF: abc1234  # pinned — validated commit SHA
+```
+
+Typical prod flow: keep your **canary wiki** on `main`, let upstream changes
+bake there, then bump your **prod wiki**'s `PANGOLIN_REF` to the SHA you've
+validated.
 
 ## Commands
 
 ```
-pangolin init        # scaffold config into current repo
-pangolin run         # execute one cycle (+ one software task if queued)
-pangolin version     # print installed version
+pangolin init                  # scaffold config into current repo (new wiki)
+pangolin refresh-workflows     # re-sync .github/workflows/*.yml from the
+                               # installed package (existing wiki, after a
+                               # pip upgrade that ships a new shim)
+pangolin run                   # execute one cycle (+ one software task if queued,
+                               # + one PR-feedback iteration if there's an owner
+                               # comment on an open pangolin PR)
+pangolin harden-egress         # workflow-only: start proxy + export HTTPS_PROXY
+pangolin version               # print installed version
 ```
+
+## Known limitations (alpha)
+
+- **Software-mode timeout is 180s.** Complex code tasks inherently loop
+  on tool-use iterations; a single cycle can't complete them. Re-open
+  the issue to continue work — pangolin picks up the latest state.
+- **Log uploads from GH Actions runners can flake.** Not a pangolin bug;
+  unrelated to the egress proxy. When a step goes red, the web UI
+  sometimes shows the log even when the API doesn't.
+- **Single-user threat model.** The sandbox is designed for *you* being
+  the sole owner triggering cycles on your own repos. Shared wikis, CI
+  triggers from untrusted forks, or hosted multi-tenant use cases
+  require more hardening.
 
 ## Security model
 
 See [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 
 TL;DR: trust gVisor + GitHub for everything, plus Anthropic's CLI to honor
-`--allowedTools ""` during the research summarization step.
+`--allowedTools ""` during the research summarization step. The egress proxy
+(`pangolin-egress-proxy`, mitmproxy + addon) enforces a hostname allowlist
+and does MITM body inspection on `api.anthropic.com` to block server-side
+tool exfil; other hosts are TLS-spliced.
 
 ## Upgrading
 
 ```bash
-# In your wiki repo's workflow:
-pip install --upgrade git+https://github.com/Nila-Loeber/pangolin.git@v0.2
+# Bump the installed package:
+pip install --upgrade git+https://github.com/Nila-Loeber/pangolin.git@<new-ref>
 
-# Or pin to a specific tag:
-pip install git+https://github.com/Nila-Loeber/pangolin.git@v0.1.3
+# If the shim changed (new env var, new step), sync it:
+pangolin refresh-workflows
+git diff .github/workflows/    # review before committing
+git add .github/workflows/agent-cycle.yml && git commit -m "chore: bump pangolin shim"
 ```
 
-Defaults in your repo's `modes.yml`, `docs/`, `wiki/SCHEMA.md`, and workflow
-files are **not** overwritten on upgrade. Compare them to the new defaults:
-
-```bash
-pangolin init --force  # overwrite (destructive — review diffs first)
-```
+Your `modes.override.yml`, wiki content, and anything under `docs/` that you
+customized are never touched by `refresh-workflows` — it only syncs
+`.github/workflows/*.yml`. For a full re-scaffold (overwrites `wiki/SCHEMA.md`
+and `.ingest-watermark`), use `pangolin init --force` — review diffs first.
 
 ## License
 
