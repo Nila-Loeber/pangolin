@@ -15,7 +15,8 @@ The `tests/test_security.py` suite is the single source of truth for the securit
 ## Layout
 
 - `src/pangolin/` — package code
-  - `cli.py` — `pangolin init|run|harden-egress|version` entry
+  - `cli.py` — `pangolin init|run|harden-egress|canary-update|version` entry
+  - `canary.py` — `pangolin canary-update`: owner-triggered "pull latest pangolin, build, run one cycle, report" for wiki repos (e.g. test-pangolin)
   - `orchestrate.py` — cycle pipeline, `CycleRunner`, container spawn, gh integration, proxy sidecar lifecycle
   - `tools.py` — `ToolExecutor`, FS scope enforcement (API-key fallback path uses `pangolin-agent-bash` for sandboxed `Bash`)
   - `modes.py` — modes.yml loader + invariant validator + JSON schemas for direct-mode agents
@@ -89,6 +90,27 @@ All knowledge-work modes have moved off container tool-use to direct json-schema
 - **triage**, **summary**, **self-improve**, **wiki-index** → direct (unchanged)
 
 Only **software** remains container tool-use (inherent — needs iterative bash + code edits).
+
+## Canary-update flow
+
+For "owner says 'update und teste'" — the single owner-facing trigger for
+running the latest pangolin main against a wiki repo end-to-end:
+
+1. `pangolin init` drops `.claude/skills/canary-update/SKILL.md` into the
+   wiki repo. The skill description matches natural-language requests
+   ("update und teste", "canary", "teste mal", ...) so the wiki-local
+   Claude agent picks it up without a slash-command.
+2. The skill does one thing: run `pangolin canary-update`.
+3. `canary.py` refreshes the wiki's workflow shim from the installed
+   package (atomic-deploy consistency), commits + pushes if it changed,
+   dispatches `build-agent-images` on pangolin upstream, waits, dispatches
+   `agent-cycle` here, waits, prints a `=== canary-update summary ===`
+   block with conclusions + URLs. The skill relays that to the owner.
+
+Auth: `gh auth` on the caller machine must cover both repos. Default
+`GITHUB_TOKEN` in a CI context would not work for the cross-repo build
+dispatch — this command is intended for the owner's local Claude Code
+session against the wiki repo.
 
 ## PR-feedback loop
 
