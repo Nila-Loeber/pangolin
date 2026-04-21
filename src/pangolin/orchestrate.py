@@ -446,6 +446,10 @@ def _build_mounts(mode: "Mode") -> list[str]:
     nested under a readable parent, override it — Docker's inner-mount-wins
     behaviour gives us OS-level per-path enforcement without our Python
     check_writable logic.
+
+    Writable paths that don't exist on the host are mkdir'd here. Without
+    this, docker creates them as root — and the agent (running as the host
+    UID) gets EACCES on every write, then loops trying to recover.
     """
     mounts = []
     writable_set = set(p.rstrip("/") for p in mode.writable_paths)
@@ -457,7 +461,10 @@ def _build_mounts(mode: "Mode") -> list[str]:
         cont = f"/work/{norm}"
         mounts += ["-v", f"{host}:{cont}:ro"]
     for p in mode.writable_paths:
-        host = str((REPO / p.rstrip("/")).resolve())
+        host_path = (REPO / p.rstrip("/")).resolve()
+        if not host_path.exists():
+            host_path.mkdir(parents=True, exist_ok=True)
+        host = str(host_path)
         cont = f"/work/{p.rstrip('/')}"
         mounts += ["-v", f"{host}:{cont}:rw"]
     return mounts
