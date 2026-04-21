@@ -46,14 +46,25 @@ def make_logger(prefix: str):
 def gh(*args: str, check: bool = True, timeout: int = 60) -> str:
     """Run gh CLI command, return stdout.
 
-    If `check` is True and the call fails, the error is written to stderr
-    so GHA surfaces it in red; we don't raise so callers can continue with
-    the empty-string result.
+    If the call fails we log a loud, unambiguous error line that includes
+    the command args, exit code, stderr, and stdout. Callers that pass
+    `check=False` still get this diagnostic — a silent return-empty on
+    failure was the root cause of "cycle green but no PR created" on the
+    2026-04-21 canary after pr-feedback merged. We don't raise here so
+    callers can still decide (e.g. "no issue to edit" is a non-fatal
+    gh failure for some code paths), but *the log* is always loud.
     """
     result = subprocess.run(
         ["gh", *args], capture_output=True, text=True,
         cwd=str(REPO), timeout=timeout,
     )
-    if check and result.returncode != 0:
-        print(f"gh error: {result.stderr[:200]}", file=sys.stderr, flush=True)
+    if result.returncode != 0:
+        # Truncate very long bodies so one bad call doesn't blow the log.
+        stderr = (result.stderr or "")[:1000]
+        stdout = (result.stdout or "")[:1000]
+        print(
+            f"🔴 gh FAILED: gh {' '.join(args[:3])}... "
+            f"exit={result.returncode} stderr={stderr!r} stdout={stdout!r}",
+            file=sys.stderr, flush=True,
+        )
     return result.stdout.strip()

@@ -563,10 +563,10 @@ def spawn_agent_container_tooluse(
             cmd, input=user_prompt, capture_output=True, text=True, timeout=180,
         )
     except subprocess.TimeoutExpired:
-        log(f"  container agent {mode.name}: timed out (180s)")
+        log(f"  🔴 container agent {mode.name} TIMEOUT (180s)")
         return {}
     if result.returncode != 0:
-        log(f"  container agent {mode.name}: exit {result.returncode}; "
+        log(f"  🔴 container agent {mode.name} FAILED: exit {result.returncode}; "
             f"stderr={result.stderr[:500]!r}; stdout={result.stdout[:500]!r}")
         return {}
     if result.stderr:
@@ -622,10 +622,10 @@ def spawn_agent_container_direct(
             timeout=timeout,
         )
     except subprocess.TimeoutExpired:
-        log(f"  spawn_agent_container: timed out ({timeout}s)")
+        log(f"  🔴 spawn_agent_container_direct TIMEOUT ({timeout}s)")
         return {}
     if result.returncode != 0:
-        log(f"  spawn_agent_container: exit {result.returncode}; "
+        log(f"  🔴 spawn_agent_container_direct FAILED: exit {result.returncode}; "
             f"stderr={result.stderr[:500]!r}; stdout={result.stdout[:500]!r}")
         return {}
 
@@ -1121,6 +1121,16 @@ def commit_and_pr(branch: str, ts: str) -> str | None:
         "--body", "Automated cycle. Review file-by-file.",
         "--base", "main", "--head", branch,
     )
+    if not pr_url:
+        # 2026-04-21 regression: cycles silently produced branches without
+        # PRs. gh() logs the stderr loud but if we return None, the caller
+        # thinks "no changes" — indistinguishable from a no-op cycle. Raise
+        # so the workflow step goes red and the runner log marker points
+        # at the real cause.
+        raise RuntimeError(
+            f"gh pr create returned empty stdout for branch {branch!r} — "
+            "see preceding '🔴 gh FAILED' line for upstream stderr"
+        )
     log(f"PR: {pr_url}")
     return pr_url
 
