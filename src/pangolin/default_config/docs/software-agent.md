@@ -16,7 +16,7 @@ The orchestrator embeds the task data inline in your prompt:
 - The agent's working directory is mounted rw for `src/`, `tests/`,
   `scripts/`. Other paths are read-only.
 
-You do not read `.bot-state/*.json` files and you do not call `gh` yourself.
+You do not call `gh` yourself — the orchestrator manages branch, push, and PR.
 
 ## Workflow
 
@@ -31,9 +31,9 @@ You do not read `.bot-state/*.json` files and you do not call `gh` yourself.
 ## Scope
 
 - Work only in the paths named in the issue. No scope creep.
-- No changes to `modes.yml`, `THREAT_MODEL.md`, `docs/`, `.github/`,
-  `Containerfile.bash`/`Containerfile.llm` — these are infrastructure files maintained manually,
-  and they are outside your writable paths anyway.
+- No changes to `modes.yml`, `docs/`, `.github/`, any `Containerfile.*`
+  — these are infrastructure files maintained manually, and they are
+  outside your writable paths anyway.
 
 ## Limits
 

@@ -136,8 +136,10 @@ pangolin version               # print installed version
 ## Known limitations (alpha)
 
 - **Software-mode timeout is 180s.** Complex code tasks inherently loop
-  on tool-use iterations; a single cycle can't complete them. Re-open
-  the issue to continue work — pangolin picks up the latest state.
+  on tool-use iterations; a single cycle can't complete them. To
+  continue work, comment on the open PR — the next cycle's PR-feedback
+  loop picks up your comment, classifies it, and iterates on the same
+  branch.
 - **Log uploads from GH Actions runners can flake.** Not a pangolin bug;
   unrelated to the egress proxy. When a step goes red, the web UI
   sometimes shows the log even when the API doesn't.

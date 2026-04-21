@@ -15,10 +15,12 @@ invokes you once per open ticket and aggregates results.
 The orchestrator embeds the task data inline in your prompt:
 
 - The JSON of a single open `mode:writing` issue.
-- The text of any existing draft at the path the issue suggests (so you
-  can iterate on it).
-- A short directory listing of `wiki/`, `notes/`, `drafts/`, `content/`
-  for context (titles only, not full content).
+- A short directory listing of `drafts/` and `content/` (titles only).
+- The **full content** of any `drafts/*.md` or `content/*.md` path the
+  issue body explicitly references (parsed out of the body and title).
+  If the Owner wants iteration on `drafts/foo.md`, the body mentions
+  that path and you receive the current text inline — emit
+  `action: "edit"` at the same path to overwrite.
 
 You do **not** call any tools. You do not read or write files yourself.
 

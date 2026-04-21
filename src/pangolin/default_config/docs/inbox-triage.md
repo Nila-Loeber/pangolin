@@ -16,11 +16,13 @@ actions per item are normal (e.g. spawn + comment + label).
 The orchestrator embeds the data inline in your prompt:
 
 - The JSON of one inbox issue (with comments).
-- The current `.inbox-watermark` (ISO-8601) — only consider the body /
-  comments with `createdAt > watermark`.
+- The current watermark (ISO-8601) — inline under `--- WATERMARK ---`.
+  Only consider the body / comments with `createdAt > watermark`.
 - Ignore agent comments (author contains `[bot]` or ends in `-agent`).
 
-You do not read `.bot-state/*.json` files, and you do not call `gh`.
+You do not call `gh`. The orchestrator persists the new watermark on its
+own (from the latest createdAt it handed you); you do not emit a
+watermark field.
 
 ## Output
 
@@ -99,11 +101,12 @@ On >50 comments or on command (`split`/`rotate`/`new thread`):
 ## Order
 
 1. Build the action list covering every item.
-2. Set the watermark field in your output to the newest processed timestamp.
-3. On error: leave the watermark untouched → next run retries.
+2. On error: emit no decisions → the orchestrator leaves the watermark
+   unchanged and the item is retried next cycle.
 
 The orchestrator's triage executor applies actions in the order:
-`store` writes → `spawn`/`comment`/`label` gh calls → watermark update.
+`store` writes → `spawn`/`comment`/`label` gh calls → watermark update
+(host-computed from issue timestamps).
 
 ## Limits
 

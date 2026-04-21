@@ -111,7 +111,9 @@ captured_by: <"research-bot" | "manual">
 
 Fragments are **archival** — the wiki-ingest agent may read them but **must
 not modify or delete them**. The audit trail "wiki page X contains a
-sentence from fragment Y" must remain intact. Enforcement: see `scripts/validate-output.sh wiki-ingest`.
+sentence from fragment Y" must remain intact. Enforcement: the
+package-shipped `validate_output.sh wiki-ingest` runs post-write and
+reverts any fragment-touching change.
 
 ### Filename-slug convention
 

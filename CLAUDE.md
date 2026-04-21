@@ -6,7 +6,7 @@ Pangolin is an owner-triggered conversational-loop CLI for wiki repos: research 
 
 ```bash
 pip install -e ".[dev]"        # editable install + pytest, ruff, build
-python3 -m pytest tests/ -v    # 38 security tests, runs in <1s
+python3 -m pytest tests/ -v    # full suite, runs in <1s
 ruff check src/ tests/         # current baseline has style noise. Not a regression gate.
 ```
 
@@ -186,4 +186,4 @@ Done (moved out of BACKLOG):
   field in `modes.yml` drives port selection.
 - Agent container merge — decided to keep split (bash vs llm).
 
-Software-mode timeout on complex Opus code tasks is a known limitation — the tool-use iteration inherently exceeds 180s. Considered fixes: switch software to Sonnet (faster but lower quality); accept that owner re-opens to continue work.
+Software-mode timeout on complex Opus code tasks is a known limitation — the tool-use iteration inherently exceeds 180s. Continuation flow: the Owner comments on the open PR (not re-opens the issue); the next cycle's `pr_feedback.run()` picks up the comment, classifies it, and iterates on the same branch. Considered fallbacks: switch software to Sonnet (faster but lower quality).

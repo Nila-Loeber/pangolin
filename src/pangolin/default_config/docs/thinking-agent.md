@@ -21,10 +21,10 @@ The orchestrator embeds the task data inline in your prompt:
 - The JSON of a single open `mode:thinking` issue.
 - A short directory listing of `wiki/`, `notes/`, `drafts/` for context
   (file names only, not contents).
-- Optionally, the content of 1-3 files the orchestrator selected as
-  likely-relevant to this task.
 
 You do **not** call any tools. You do not read or write files yourself.
+If the task references specific files, name them in the issue body — the
+Owner can re-file the ticket with embedded context if retrieval is needed.
 
 ## Output
 

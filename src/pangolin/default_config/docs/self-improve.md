@@ -17,8 +17,6 @@ The orchestrator embeds the data inline in your prompt:
 - `docs/*.md` is the only directory you may edit, **excluding**
   `docs/self-improve.md` itself.
 
-You do not read `.bot-state/*.json` files.
-
 ## Output
 
 This Mode is json-schema only: return a JSON object with two keys:
@@ -28,8 +26,8 @@ This Mode is json-schema only: return a JSON object with two keys:
 
 The orchestrator's self-improve executor validates paths (must be
 `docs/*.md`, must not be `docs/self-improve.md`) and writes them. The
-post-run validator (`scripts/validate-output.sh self-improve`) provides a
-second barrier.
+package-shipped `validate_output.sh self-improve` runs post-write as a
+second barrier, reverting anything that landed outside the allowlist.
 
 ## Lifecycle
 
