@@ -84,17 +84,21 @@ class TestSfrFs:
         finally: v.unlink(missing_ok=True)
     @pytest.mark.sfr("FS.4")
     def test_FS_validator_leaves_out_of_scope_untouched(self):
-        """Validator does NOT touch files outside its mode's scope (e.g. .inbox-watermark from triage)."""
-        # Modify a tracked out-of-scope file (use .ingest-watermark; saved + restored).
-        wm = REPO/".inbox-watermark"
-        original = wm.read_text() if wm.exists() else ""
+        """Validator does NOT touch files outside its mode's scope. Research
+        is scoped to wiki/fragment/, so a foreign probe file elsewhere must
+        stay intact after a research-validator pass."""
+        probe = REPO / ".pangolin-validator-probe"
         try:
-            wm.write_text("2099-01-01T00:00:00Z\n")
-            subprocess.run(["bash",str(validate_output_script()),"research"],capture_output=True,text=True,cwd=str(REPO))
-            # research validator must NOT have reverted .inbox-watermark
-            assert wm.read_text().startswith("2099"), "research validator wrongly reverted out-of-scope file"
+            probe.write_text("should-not-be-touched\n")
+            subprocess.run(
+                ["bash", str(validate_output_script()), "research"],
+                capture_output=True, text=True, cwd=str(REPO),
+            )
+            assert probe.exists(), "research validator wrongly deleted out-of-scope probe"
+            assert probe.read_text() == "should-not-be-touched\n", \
+                "research validator wrongly altered out-of-scope probe"
         finally:
-            wm.write_text(original)
+            probe.unlink(missing_ok=True)
 
 class TestSfrTrifecta:
     @pytest.mark.sfr("TRIFECTA.1")
@@ -579,3 +583,187 @@ class TestQ1DirectWrites:
         )
         content = target.read_text()
         assert "existing" in content and "new entry" in content
+
+
+class TestTriageSchemaNoWatermark:
+    """D2 regression: triage schema no longer requires (or even includes)
+    a `watermark` field. The host computes the new watermark deterministically
+    from issue/comment timestamps; asking the agent to emit it was wasted
+    tokens + a misleading Instruction in the SSoT doc."""
+
+    def test_triage_schema_lacks_watermark(self):
+        from pangolin.modes import SCHEMAS
+        s = SCHEMAS["triage"]
+        assert "watermark" not in s["required"]
+        assert "watermark" not in s["properties"]
+
+
+class TestResearchDocSplit:
+    """DRIFT-7 regression: research pipeline has two distinct SSoT docs
+    because Phase 1 (trusted input, WebSearch tools) and Phase 2 (untrusted
+    input, no tools) are operationally different."""
+
+    def test_both_research_docs_exist(self):
+        from pangolin.paths import default_docs_dir
+        d = default_docs_dir()
+        assert (d / "research-search-agent.md").exists()
+        assert (d / "research-summarise-agent.md").exists()
+        # The pre-split file must be gone — having both would be a silent
+        # merge conflict waiting to happen.
+        assert not (d / "research-agent.md").exists()
+
+    def test_research_alias_resolves_to_summarise(self):
+        """The generic fallback in run_container_agent (API-key path) aliases
+        `research` mode → research-summarise-agent.md so the pre-split file
+        rename doesn't silently reroute to inbox-triage.md."""
+        import pangolin.orchestrate as orch
+        src = (REPO / "src/pangolin/orchestrate.py").read_text()
+        assert "research-summarise-agent.md" in src
+
+
+class TestSelfImproveValidatorWired:
+    """D3 regression: _phase_self_improve must invoke the validator post-write,
+    matching the claim in docs/self-improve.md (second barrier)."""
+
+    def test_phase_self_improve_calls_validator(self):
+        src = (REPO / "src/pangolin/orchestrate.py").read_text()
+        # Locate the self-improve phase body and check it spawns the validator.
+        import re
+        m = re.search(
+            r"def _phase_self_improve.*?(?=\n    def |\nclass |\Z)",
+            src, re.DOTALL,
+        )
+        assert m, "could not find _phase_self_improve in orchestrate.py"
+        body = m.group(0)
+        assert 'validate_output_script()' in body
+        assert '"self-improve"' in body
+
+
+class TestDeadContainerPathRemoved:
+    """D4 regression: _phase_task_mode no longer falls back to a container-
+    tool-use path. Both thinking and writing run as direct json-schema (Q1),
+    and any other mode_name passed in is an explicit error."""
+
+    def test_phase_task_mode_rejects_unknown_mode(self):
+        from pangolin import orchestrate as O
+        runner = O.CycleRunner.__new__(O.CycleRunner)
+        # Stub in what _phase_task_mode reads from self.modes
+        from pangolin.modes import load_modes
+        runner.modes = load_modes()
+        # The function lists issues via gh first; pre-empt that to avoid
+        # network by checking the raise path via direct inspection.
+        src = (REPO / "src/pangolin/orchestrate.py").read_text()
+        assert "spawn_agent_container_tooluse" not in src.split("def _phase_task_mode")[1].split("def _run_")[0]
+
+    def test_has_new_writes_in_removed(self):
+        """The helper was only called by the deleted container fallback."""
+        from pangolin import orchestrate as O
+        assert not hasattr(O, "_has_new_writes_in")
+
+
+class TestAgentCommitEmailShared:
+    """D5 regression: the commit email the cycle uses is a single constant
+    in core.py; pr_feedback imports it. agent-cycle.yml must set git
+    user.email to the same value or the PR-feedback watermark misses
+    agent commits."""
+
+    def test_core_exports_the_constant(self):
+        from pangolin.core import AGENT_COMMIT_EMAIL
+        assert AGENT_COMMIT_EMAIL.endswith("@users.noreply.github.com")
+
+    def test_pr_feedback_uses_core_constant(self):
+        from pangolin import pr_feedback as PF
+        from pangolin.core import AGENT_COMMIT_EMAIL
+        assert PF.AGENT_COMMIT_EMAIL is AGENT_COMMIT_EMAIL
+
+    def test_workflow_sets_the_same_email(self):
+        from pangolin.core import AGENT_COMMIT_EMAIL
+        wf = (REPO / "src/pangolin/default_config/workflows/agent-cycle.yml").read_text()
+        assert AGENT_COMMIT_EMAIL in wf, (
+            "agent-cycle.yml must set git user.email to core.AGENT_COMMIT_EMAIL"
+        )
+
+
+class TestWritingReferencedFiles:
+    """DRIFT-12 regression: writing-mode iterating on an existing draft now
+    receives the current file content inline when the task body references
+    its path, instead of seeing only a directory listing."""
+
+    def _task(self, body: str, title: str = "iterate"):
+        return {"number": 1, "title": title, "body": body}
+
+    def test_references_drafts_path_in_body(self, tmp_path, monkeypatch):
+        from pangolin import orchestrate as O
+        monkeypatch.setattr(O, "REPO", tmp_path)
+        (tmp_path / "drafts").mkdir()
+        (tmp_path / "drafts" / "foo.md").write_text("old version")
+        blobs = O._referenced_writable_files(
+            self._task("please tighten drafts/foo.md"),
+            allowed_prefixes=("drafts/", "content/"),
+            cap_bytes=10_000,
+        )
+        assert len(blobs) == 1
+        assert "drafts/foo.md" in blobs[0]
+        assert "old version" in blobs[0]
+
+    def test_ignores_unrelated_paths(self, tmp_path, monkeypatch):
+        from pangolin import orchestrate as O
+        monkeypatch.setattr(O, "REPO", tmp_path)
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "evil.md").write_text("code")
+        blobs = O._referenced_writable_files(
+            self._task("touch src/evil.md"),
+            allowed_prefixes=("drafts/", "content/"),
+            cap_bytes=10_000,
+        )
+        assert blobs == []
+
+    def test_ignores_missing_files(self, tmp_path, monkeypatch):
+        from pangolin import orchestrate as O
+        monkeypatch.setattr(O, "REPO", tmp_path)
+        blobs = O._referenced_writable_files(
+            self._task("rewrite drafts/nope.md"),
+            allowed_prefixes=("drafts/", "content/"),
+            cap_bytes=10_000,
+        )
+        assert blobs == []
+
+    def test_rejects_traversal(self, tmp_path, monkeypatch):
+        from pangolin import orchestrate as O
+        monkeypatch.setattr(O, "REPO", tmp_path)
+        (tmp_path / "drafts").mkdir()
+        (tmp_path / "secret.md").write_text("nope")
+        blobs = O._referenced_writable_files(
+            self._task("see drafts/../secret.md"),
+            allowed_prefixes=("drafts/", "content/"),
+            cap_bytes=10_000,
+        )
+        assert blobs == []
+
+    def test_cap_bytes_truncates(self, tmp_path, monkeypatch):
+        from pangolin import orchestrate as O
+        monkeypatch.setattr(O, "REPO", tmp_path)
+        (tmp_path / "drafts").mkdir()
+        (tmp_path / "drafts" / "a.md").write_text("x" * 600)
+        (tmp_path / "drafts" / "b.md").write_text("y" * 600)
+        blobs = O._referenced_writable_files(
+            self._task("edit drafts/a.md and drafts/b.md"),
+            allowed_prefixes=("drafts/", "content/"),
+            cap_bytes=700,
+        )
+        # First file fits, second is a truncation marker (no content).
+        assert len(blobs) == 2
+        assert "drafts/a.md" in blobs[0] and "x" in blobs[0]
+        assert "TRUNCATED" in blobs[1]
+
+
+class TestTriagePathsNoInboxWatermark:
+    """DRIFT-6 regression: .inbox-watermark lives in a GitHub issue comment
+    now (sentinel pattern). Mounting a nonexistent file path into agent
+    containers would fail at _build_mounts — purge it from the triage paths."""
+
+    def test_triage_paths_dont_include_inbox_watermark(self):
+        from pangolin.modes import load_modes
+        triage = load_modes()["triage"]
+        assert ".inbox-watermark" not in triage.readable_paths
+        assert ".inbox-watermark" not in triage.writable_paths

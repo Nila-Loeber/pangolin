@@ -909,10 +909,17 @@ def run_container_agent(
     # Load the SSoT doc as system prompt. Map mode name → docs/<mode>-agent.md
     # with a few hand-picked aliases. resolve_config() lets wiki repos override
     # the package default by checking in their own docs/<name>.md.
+    # Research is a two-phase pipeline (search + summarise); the "research"
+    # mode in modes.yml covers Phase 2, so the fallback loads the summarise doc.
     system = f"You are the {mode.name} agent."
-    for candidate in [f"docs/{mode.name}-agent.md", f"docs/{mode.name}.md",
-                      "docs/inbox-triage.md", "docs/inbox-summary.md",
-                      "docs/wiki-ingest.md"]:
+    mode_doc_aliases = {"research": "docs/research-summarise-agent.md"}
+    candidates = [
+        mode_doc_aliases.get(mode.name, f"docs/{mode.name}-agent.md"),
+        f"docs/{mode.name}.md",
+        "docs/inbox-triage.md", "docs/inbox-summary.md",
+        "docs/wiki-ingest.md",
+    ]
+    for candidate in candidates:
         try:
             system = resolve_config(candidate).read_text()
             break
@@ -1234,23 +1241,55 @@ def apply_writes_for_mode(mode: "Mode", writes: list[dict]) -> list[str]:
 
 # ── Main cycle ──
 
-def _has_new_writes_in(paths: list[str], since_ts: float) -> bool:
-    """True iff any file within `paths` has mtime > since_ts."""
-    for wp in paths:
-        base = REPO / wp.rstrip("/")
-        if not base.exists():
+_PATH_REF_RE = re.compile(
+    r"(?<![a-zA-Z0-9_./-])"           # not part of a longer identifier
+    r"([a-zA-Z0-9_./-]+?\.md)"        # capture the path itself
+    r"(?![a-zA-Z0-9_./-])"
+)
+
+
+def _referenced_writable_files(
+    task: dict, *, allowed_prefixes: tuple[str, ...], cap_bytes: int,
+) -> list[str]:
+    """Return full-file blobs for any path in `task.body`/`task.title` that
+    falls under one of `allowed_prefixes` and exists on disk. Caps total
+    bytes so a task referencing dozens of files can't blow the context.
+
+    Used by writing-mode to let the agent iterate on an existing draft
+    without having to guess its current text.
+    """
+    haystack = (task.get("title") or "") + "\n" + (task.get("body") or "")
+    seen: set[str] = set()
+    blobs: list[str] = []
+    total = 0
+    repo_resolved = REPO.resolve()
+    for m in _PATH_REF_RE.finditer(haystack):
+        rel = m.group(1).lstrip("./")
+        if rel in seen or not any(rel.startswith(p) for p in allowed_prefixes):
             continue
-        if base.is_file():
-            if base.stat().st_mtime > since_ts:
-                return True
+        seen.add(rel)
+        full = (REPO / rel).resolve()
+        # Traversal guard: the lexical prefix check above was satisfied by
+        # "drafts/../secret.md"; reject if the resolved path doesn't actually
+        # sit under an allowed prefix relative to REPO.
+        try:
+            resolved_rel = str(full.relative_to(repo_resolved))
+        except ValueError:
             continue
-        for f in base.rglob("*"):
-            try:
-                if f.is_file() and f.stat().st_mtime > since_ts:
-                    return True
-            except OSError:
-                continue
-    return False
+        if not any(resolved_rel.startswith(p) for p in allowed_prefixes):
+            continue
+        if not full.is_file():
+            continue
+        try:
+            body = full.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if total + len(body) > cap_bytes:
+            blobs.append(f"--- FILE: {rel} (TRUNCATED — cap reached) ---")
+            break
+        blobs.append(f"--- FILE: {rel} ---\n{body}")
+        total += len(body)
+    return blobs
 
 
 class CycleRunner:
@@ -1271,7 +1310,6 @@ class CycleRunner:
         self.branch: str = ""
         self.ts: str = ""
         self.start_iso: str = ""
-        self.cycle_start_ts: float = 0.0
         # Populated by _commit():
         self.pr_url: str | None = None
 
@@ -1305,8 +1343,6 @@ class CycleRunner:
     # ── Setup ──
 
     def _setup(self) -> None:
-        import time
-        self.cycle_start_ts = time.time()  # for _has_new_writes_in() post-checks
         # Egress proxy must be running before any agent container is spawned.
         # Idempotent — no-op if already up from a prior cycle.
         if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
@@ -1404,7 +1440,11 @@ class CycleRunner:
         if not research_list:
             return
         log(f"research: {len(research_list)} owner-activated ticket(s)")
-        ssot = resolve_config("docs/research-agent.md").read_text()
+        # DRIFT-7 split: Phase 1 (WebSearch, trusted input) and Phase 2
+        # (no tools, untrusted data) run under very different permission
+        # profiles — they deserve their own SSoT docs.
+        search_ssot = resolve_config("docs/research-search-agent.md").read_text()
+        summarise_ssot = resolve_config("docs/research-summarise-agent.md").read_text()
         all_processed: list[int] = []
         research_provider = self.get_provider(mode.provider)
         for issue in research_list:
@@ -1423,7 +1463,7 @@ class CycleRunner:
                     f"URLs, dates, and key quotes. Max 5 sources."
                 )
                 search_results = spawn_agent_container_direct(
-                    system_prompt=ssot,
+                    system_prompt=search_ssot,
                     user_prompt=search_prompt,
                     model=mode.model,
                     allowed_tools="WebSearch WebFetch",
@@ -1444,7 +1484,7 @@ class CycleRunner:
                 # gates the only network path to a single API endpoint.
                 schema = SCHEMAS.get(mode.json_schema, {})
                 summarise_system = (
-                    f"{ssot}\n\nRespond with a single JSON object matching this schema: "
+                    f"{summarise_ssot}\n\nRespond with a single JSON object matching this schema: "
                     f"{json.dumps(schema)}"
                 )
                 summarise_prompt = (
@@ -1691,7 +1731,7 @@ class CycleRunner:
             )
             chat_result = idx_provider.chat(
                 system=system, user=index_prompt,
-                model=index_model, json_schema=index_schema,
+                model=summary_mode.model, json_schema=index_schema,
             )
             try:
                 result = json.loads(chat_result.text)
@@ -1707,16 +1747,10 @@ class CycleRunner:
     # ── THINKING + WRITING (per-issue) ──
 
     def _phase_task_mode(self, mode_name: str) -> None:
-        """Dispatch by mode.execution.
-
-        direct (json-schema): agent returns inline content, host writes files
-        out-of-band. Faster (one API call) and prevents the "agent claims write
-        but didn't" failure mode — host knows deterministically what landed.
-
-        container (tool-use): legacy path, agent uses Write/Edit tools inside
-        the container. Kept for thinking-mode (until Q1 covers it) and any
-        future tool-use modes.
-        """
+        """Per-mode dispatch. Both modes run as direct json-schema (Q1) —
+        agent returns inline content, host writes files out-of-band. Faster
+        (one API call) and removes the "agent claims write but didn't"
+        failure mode."""
         log(f"=== {mode_name.upper()} ===")
         auto_reopen_recent(f"mode:{mode_name}")
         tasks = gh(
@@ -1729,38 +1763,12 @@ class CycleRunner:
             return
         mode = self.modes[mode_name]
         log(f"{mode_name}: {len(task_list)} owner-activated ticket(s)")
-        if mode.execution == "direct" and mode_name == "writing":
+        if mode_name == "writing":
             self._run_writing_direct(mode, task_list)
-            return
-        if mode.execution == "direct" and mode_name == "thinking":
+        elif mode_name == "thinking":
             self._run_thinking_direct(mode, task_list)
-            return
-        # Container-tooluse path (thinking, future tool-use modes).
-        ssot = resolve_config(f"docs/{mode_name}-agent.md").read_text()
-        all_processed: list[int] = []
-        wrote_anything = False
-        for task in task_list:
-            n = task["number"]
-            prompt = (
-                f"--- TASK ISSUE ---\n{json.dumps(task)}\n\n"
-                f"--- TASK ---\nProcess this single {mode_name} task."
-            )
-            if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
-                spawn_agent_container_tooluse(mode, ssot, prompt, egress_tier=mode.egress)
-                all_processed.append(n)
-            else:
-                _chat, ex = run_container_agent(
-                    mode, prompt, self.get_provider(mode.provider),
-                    processed_eligible={n},
-                )
-                all_processed.extend(ex.processed)
-                if ex.written_files:
-                    wrote_anything = True
-        if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
-            wrote_anything = _has_new_writes_in(mode.writable_paths, self.cycle_start_ts)
-        self.processed_per_mode[mode_name] = _aggregate_inference_filter(
-            all_processed, wrote_anything, mode_name,
-        )
+        else:
+            raise ValueError(f"_phase_task_mode: unsupported mode {mode_name!r}")
 
     def _run_writing_direct(self, mode: Mode, task_list: list[dict]) -> None:
         """Q1: writing-mode runs as direct json-schema. Agent emits a list of
@@ -1773,20 +1781,30 @@ class CycleRunner:
         all_written: list[str] = []
         for task in task_list:
             n = task["number"]
-            # Build context: directory listings of writable + readable paths.
-            # Agent sees what exists (titles only) but not full content. If owner
-            # wants iteration on an existing draft, agent requests action="edit"
-            # at the same path; host overwrites.
+            # Build context: directory listings of writable paths + full
+            # content of any draft/content file the task body explicitly
+            # references. The common case is "iterate on drafts/foo.md" —
+            # without the actual current text the agent can only re-invent,
+            # which is the opposite of iteration.
             ctx_listing = []
             for p in ("drafts", "content"):
                 d = REPO / p
                 if d.is_dir():
                     files = sorted(f.name for f in d.glob("*.md"))
                     ctx_listing.append(f"{p}/: " + (", ".join(files) if files else "(empty)"))
+            referenced_blobs = _referenced_writable_files(
+                task, allowed_prefixes=("drafts/", "content/"), cap_bytes=20_000,
+            )
+            referenced_block = (
+                "\n--- REFERENCED FILES (full content; edit by emitting action=edit on the same path) ---\n"
+                + "\n\n".join(referenced_blobs)
+                if referenced_blobs else ""
+            )
             user_prompt = (
                 f"--- TASK ISSUE ---\n{json.dumps(task)}\n\n"
                 f"--- EXISTING FILES (titles only) ---\n"
-                + "\n".join(ctx_listing) + "\n\n"
+                + "\n".join(ctx_listing) + "\n"
+                + referenced_block + "\n\n"
                 f"--- TASK ---\nProduce the draft(s) for this single writing task. "
                 f"Return the JSON object per the schema; do not call any tools."
             )
@@ -1954,6 +1972,16 @@ class CycleRunner:
                 in_set = [n]
                 log(f"  self-improve: auto-claiming #{n} as processed (edit applied, agent forgot to report)")
             all_claimed.extend(in_set)
+        # Post-run validator: second barrier against an agent writing outside
+        # docs/ or touching docs/self-improve.md. write_self_improve_edits
+        # already rejects those paths host-side; the validator catches any
+        # drift in that logic + reverts a violating file if one ever sneaks
+        # through.
+        if total_applied > 0:
+            subprocess.run(
+                ["bash", str(validate_output_script()), "self-improve"],
+                cwd=str(REPO),
+            )
         self.processed_per_mode["self-improve"] = _aggregate_inference_filter(
             all_claimed, total_applied > 0, "self-improve",
         )
