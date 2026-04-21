@@ -150,6 +150,21 @@ class TestHardening:
         assert "def harden_egress" in c
         assert "iptables" in c
         assert "HTTPS_PROXY" in c
+
+    def test_harden_egress_allowlists_gh_actions_cidrs(self):
+        """harden_egress must fetch api.github.com/meta .actions[] and
+        allowlist those CIDRs on TCP/443 before applying REJECT — otherwise
+        the runner can't phone home and the job silent-hangs. /meta has
+        ~5000 v4 CIDRs so an ipset is used instead of per-CIDR rules."""
+        c = read(REPO/"src/pangolin/orchestrate.py")
+        assert "_fetch_gh_actions_cidrs" in c
+        assert "api.github.com/meta" in c
+        assert "ipset" in c
+        assert "hash:net" in c
+        # --dport 443 narrows DiD: GH CIDRs cover millions of IPs; don't
+        # let them be an exfil pipe on arbitrary ports.
+        assert '"--dport", "443"' in c
+
     @pytest.mark.sfr("FLM.1")
     def test_iteration_limit(self):
         c = read(REPO/"src/pangolin/providers.py")
