@@ -424,7 +424,7 @@ together with BACKLOG.md.
 | R.SUPPLY_SBOM | No published SBOM, no SCA run in CI. | On BACKLOG (CycloneDX + image scanner). |
 | R.HOST_EGRESS_BYPASS | iptables REJECT was removed 2026-04-21 (broke GH-Actions log uploads); only `HTTPS_PROXY` export remains. A raw-socket library that ignores proxy env would bypass. | Accepted for single-user alpha. Assumption A.INFRA (honest pip/gh/httpx) covers this in-scope. |
 | R.CLI_TRUST | The claude CLI's adherence to `--allowedTools ""` is an assumption (A.INFRA). | Defense-in-depth: mount-based FS scope (tools that reach outside the mount can't see targets), egress hostname allowlist (WebFetch to attacker host blocked), Anthropic endpoint allowlist (CLI can't smuggle via non-`/v1/messages` paths), and Phase B server-tool block (typed tools rejected on the one allowed endpoint). |
-| R.TIMEOUT | Software-mode 180 s timeout truncates long tool-use loops. | Not a security risk — kills wedged agents. PR-feedback loop is the continuation mechanism. |
+| R.TIMEOUT | Software-mode 480 s timeout truncates long tool-use loops. | Not a security risk — kills wedged agents. PR-feedback loop is the continuation mechanism. |
 | R.PR_INLINE | Inline review-thread comments not yet consumed by the PR-feedback loop. | Phase 2 on BACKLOG; no security risk, only missed conversational signal. |
 | R.MULTI_TENANT | FS mount model assumes single-writer Owner. | Out of scope (assumption A.OWNER). Shared wikis would require a new ST. |
 | R.ROTATION | OAuth and GH tokens are not rotated by pangolin. | Environmental objective OE.SECRETS (Owner rotates on suspicion). |

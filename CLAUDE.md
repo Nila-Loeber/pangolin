@@ -191,4 +191,4 @@ Done (moved out of BACKLOG):
   field in `modes.yml` drives port selection.
 - Agent container merge — decided to keep split (bash vs llm).
 
-Software-mode timeout on complex Opus code tasks is a known limitation — the tool-use iteration inherently exceeds 180s. Continuation flow: the Owner comments on the open PR (not re-opens the issue); the next cycle's `pr_feedback.run()` picks up the comment, classifies it, and iterates on the same branch. Considered fallbacks: switch software to Sonnet (faster but lower quality).
+Software-mode timeout on complex Opus code tasks is a known limitation — the tool-use iteration can exceed the 480s budget on anything larger than a mid-size change. Continuation flow: the Owner comments on the open PR (not re-opens the issue); the next cycle's `pr_feedback.run()` picks up the comment, classifies it, and iterates on the same branch. Considered fallbacks: switch software to Sonnet (faster but lower quality).
