@@ -3,7 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+
+
+def _add_verbose(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--verbose", action="store_true",
+        help="Log full docker commands + untruncated agent stdout/stderr and "
+             "pass --verbose to the claude CLI so tool-call traces appear in "
+             "the log. Sets PANGOLIN_VERBOSE=1 for the duration of the run.",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -34,14 +44,16 @@ def main(argv: list[str] | None = None) -> int:
              "Use after bumping the installed pangolin package to pick up "
              "new workflow-shim changes without rewriting wiki content.",
     )
-    sub.add_parser(
+    cycle_p = sub.add_parser(
         "cycle",
         help="Harden egress and run one full conversational cycle. "
              "Equivalent to `pangolin harden-egress && pangolin run` but in "
              "a single process — the recommended entry point for the "
              "agent-cycle workflow so the shim never has to split steps.",
     )
-    sub.add_parser("run", help="Run one full conversational cycle (includes one software task if queued).")
+    _add_verbose(cycle_p)
+    run_p = sub.add_parser("run", help="Run one full conversational cycle (includes one software task if queued).")
+    _add_verbose(run_p)
     sub.add_parser(
         "harden-egress",
         help="Bring up the egress proxy + lock host egress via iptables. "
@@ -51,6 +63,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("version", help="Print the installed version.")
 
     args = parser.parse_args(argv)
+
+    if getattr(args, "verbose", False):
+        os.environ["PANGOLIN_VERBOSE"] = "1"
 
     if args.cmd == "init":
         from pangolin.scaffold import init_repo

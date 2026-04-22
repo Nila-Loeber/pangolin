@@ -541,16 +541,24 @@ def spawn_agent_container_tooluse(
         raise RuntimeError("spawn_agent_container_tooluse needs CLAUDE_CODE_OAUTH_TOKEN")
     _ensure_proxy_running()
 
+    verbose = os.environ.get("PANGOLIN_VERBOSE") == "1"
     allowed_csv = ",".join(
         CLI_TOOL_NAMES[t] for t in mode.allowed_tools if t in CLI_TOOL_NAMES
     )
-    cmd = _base_docker_flags(egress_tier=egress_tier) + _build_mounts(mode) + [
-        _image_for_mode(mode),
+    claude_args = [
         "claude", "-p",
         "--dangerously-skip-permissions",
         "--model", mode.model,
         "--system-prompt", system_prompt,
     ] + (["--allowedTools", allowed_csv] if allowed_csv else [])
+    if verbose:
+        # Tool-call trace in human-readable form; invaluable for diagnosing
+        # hallucinated-write failures where the agent claims "VERIFIED:" but
+        # no Write tool-call actually executed and `git status` is empty.
+        claude_args += ["--verbose"]
+    cmd = _base_docker_flags(egress_tier=egress_tier) + _build_mounts(mode) + [
+        _image_for_mode(mode),
+    ] + claude_args
     # Timeout sized for legitimate tool-use loops: mid-size software tasks
     # on Opus can run 10–15 iterations (Write/Edit + Bash verify + test),
     # which saturates ~5–7 min of wallclock. 8 min covers that with headroom
@@ -558,6 +566,8 @@ def spawn_agent_container_tooluse(
     # case is software-mode running in pangolin-agent-llm: the LLM image
     # deliberately omits a Posix shell, so the Bash tool errors out and Opus
     # loops on retries until docker kills it.
+    if verbose:
+        log(f"  [verbose] cmd: {_redact_token(cmd)}")
     try:
         result = subprocess.run(
             cmd, input=user_prompt, capture_output=True, text=True, timeout=480,
@@ -566,16 +576,35 @@ def spawn_agent_container_tooluse(
         log(f"  🔴 container agent {mode.name} TIMEOUT (480s)")
         return {}
     if result.returncode != 0:
+        stderr_limit = None if verbose else 500
+        stdout_limit = None if verbose else 500
         log(f"  🔴 container agent {mode.name} FAILED: exit {result.returncode}; "
-            f"stderr={result.stderr[:500]!r}; stdout={result.stdout[:500]!r}")
+            f"stderr={result.stderr[:stderr_limit]!r}; stdout={result.stdout[:stdout_limit]!r}")
         return {}
     if result.stderr:
-        log(f"  container agent {mode.name}: stderr={result.stderr[:500]}")
+        stderr_limit = None if verbose else 500
+        log(f"  container agent {mode.name}: stderr={result.stderr[:stderr_limit]}")
     stdout = result.stdout.strip()
     log(f"  {mode.name}: done ({len(stdout)} chars output)")
     if stdout:
-        log(f"  {mode.name}: preview: {stdout[:300]}")
+        preview_limit = None if verbose else 300
+        label = "stdout" if verbose else "preview"
+        log(f"  {mode.name}: {label}: {stdout[:preview_limit]}")
     return {"result": stdout}
+
+
+def _redact_token(cmd: list[str]) -> list[str]:
+    """Return a copy of `cmd` with any `TOKEN=<value>` env arg's value masked.
+    Used for logging docker args in verbose mode without leaking the
+    ANTHROPIC_TOKEN placeholder, real OAuth tokens, or anything else."""
+    out = []
+    for arg in cmd:
+        if "TOKEN=" in arg or "API_KEY=" in arg:
+            head, _, _ = arg.partition("=")
+            out.append(f"{head}=<redacted>")
+        else:
+            out.append(arg)
+    return out
 
 
 def spawn_agent_container_direct(
@@ -603,9 +632,14 @@ def spawn_agent_container_direct(
         raise RuntimeError("spawn_agent_container_direct needs CLAUDE_CODE_OAUTH_TOKEN in env")
     _ensure_proxy_running()
 
+    verbose = os.environ.get("PANGOLIN_VERBOSE") == "1"
     base = _base_docker_flags(egress_tier=egress_tier)
     # Comma-separated single arg, matching claude CLI convention.
     tools_args = ["--allowedTools", allowed_tools.replace(" ", ",")] if allowed_tools.strip() else []
+    # Note: we deliberately do NOT add `--verbose` to the claude CLI here,
+    # because direct mode parses `result.stdout` as a single JSON envelope;
+    # verbose would prepend non-JSON log lines and break the parse. Verbose
+    # here only covers the docker-cmd + stderr/stdout logging around the call.
     docker_cmd = base + [
         AGENT_IMAGE,
         "claude", "--print",
@@ -614,6 +648,8 @@ def spawn_agent_container_direct(
         "--model", model,
         "--system-prompt", system_prompt,
     ] + tools_args
+    if verbose:
+        log(f"  [verbose] direct cmd: {_redact_token(docker_cmd)}")
     try:
         result = subprocess.run(
             docker_cmd,
@@ -625,9 +661,13 @@ def spawn_agent_container_direct(
         log(f"  🔴 spawn_agent_container_direct TIMEOUT ({timeout}s)")
         return {}
     if result.returncode != 0:
+        stderr_limit = None if verbose else 500
+        stdout_limit = None if verbose else 500
         log(f"  🔴 spawn_agent_container_direct FAILED: exit {result.returncode}; "
-            f"stderr={result.stderr[:500]!r}; stdout={result.stdout[:500]!r}")
+            f"stderr={result.stderr[:stderr_limit]!r}; stdout={result.stdout[:stdout_limit]!r}")
         return {}
+    if verbose and result.stderr:
+        log(f"  [verbose] direct stderr: {result.stderr}")
 
     # Parse the CLI JSON envelope
     try:
