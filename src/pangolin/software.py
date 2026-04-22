@@ -25,6 +25,80 @@ from pangolin.tools import ToolConfig, ToolExecutor
 log = make_logger("software")
 
 
+def _verified_paths(agent_output: str) -> list[str]:
+    """Parse `VERIFIED: path1, path2, ...` out of the agent's final message.
+    Empty list if the line is absent or malformed. Case-insensitive."""
+    for line in agent_output.splitlines():
+        stripped = line.strip()
+        head, _, rest = stripped.partition(":")
+        if head.strip().upper() == "VERIFIED":
+            return [p.strip() for p in rest.split(",") if p.strip()]
+    return []
+
+
+def _stage_and_check() -> tuple[bool, list[str]]:
+    """Stage software-mode writable paths and return (changes_present, staged_paths)."""
+    subprocess.run(
+        ["git", "add", "src/", "tests/", "scripts/"],
+        cwd=str(REPO), capture_output=True,
+    )
+    out = subprocess.run(
+        ["git", "diff", "--cached", "--name-only"],
+        cwd=str(REPO), capture_output=True, text=True,
+    )
+    staged = [ln for ln in out.stdout.splitlines() if ln.strip()]
+    return (len(staged) > 0, staged)
+
+
+def _spawn_and_verify(mode, ssot: str, prompt: str, *, max_attempts: int = 2) -> bool:
+    """Spawn the software container, cross-check agent's VERIFIED claim
+    against actual staged changes, retry once on hallucination.
+
+    Returns True if changes were staged (caller proceeds to commit/push/PR),
+    False if even the retry produced no changes (caller aborts).
+
+    Hallucination signature: agent's final message contains `VERIFIED: <path>`
+    but `git diff --cached` is empty. The retry prompt calls this out
+    explicitly so the agent gets one more chance to actually invoke Write.
+    """
+    from pangolin.orchestrate import spawn_agent_container_tooluse
+
+    attempt = 1
+    current_prompt = prompt
+    while attempt <= max_attempts:
+        result = spawn_agent_container_tooluse(mode, ssot, current_prompt)
+        agent_out = result.get("result", "") if isinstance(result, dict) else ""
+        changed, staged = _stage_and_check()
+        if changed:
+            if attempt > 1:
+                log(f"retry succeeded on attempt {attempt} — {len(staged)} path(s) staged")
+            return True
+
+        verified = _verified_paths(agent_out)
+        if not verified:
+            log(f"no changes and no VERIFIED: footer — agent did not attempt the task")
+            return False
+        if attempt >= max_attempts:
+            log(f"🔴 retry exhausted: agent claimed VERIFIED: {verified} but no files staged")
+            return False
+
+        log(f"⚠️ hallucinated VERIFIED: {verified} but no changes staged — retrying ({attempt+1}/{max_attempts})")
+        current_prompt = (
+            prompt
+            + "\n\n--- RETRY ---\n"
+            + "Your previous response contained a `VERIFIED:` footer, but the "
+            + "host-side orchestrator detected NO actual file changes on disk. "
+            + "This means you did not truly invoke the `Write` tool — your "
+            + "last message was a plausible-sounding text description without "
+            + "the corresponding tool-call. This is your second and final "
+            + "attempt. Invoke the `Write` tool with the real file content "
+            + "NOW, then use `Bash` to `ls -la` and `cat` the file to confirm "
+            + "it is on disk. Only then emit the `VERIFIED:` footer."
+        )
+        attempt += 1
+    return False
+
+
 def _branch_for_task(number: int, title: str) -> str:
     """Build a git-safe branch name from an issue number + title.
 
@@ -70,7 +144,8 @@ def run():
     #   (no-network) for sandboxed shell execution. Per-token billing.
     if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
         from pangolin.orchestrate import spawn_agent_container_tooluse
-        spawn_agent_container_tooluse(mode, ssot, prompt)
+        if not _spawn_and_verify(mode, ssot, prompt):
+            return
         log("agent done: OAuth/CLI path (pangolin-agent-software)")
     elif os.environ.get("ANTHROPIC_API_KEY"):
         provider = create_provider(mode.provider)
@@ -92,20 +167,20 @@ def run():
             tool_executor=executor,
         )
         log(f"agent done: API-key path ({result.tool_calls} tool calls)")
+        # Stage + early-return for the SDK path (no retry here — the SDK
+        # path uses in-process ToolExecutor, so writes can't hallucinate).
+        subprocess.run(
+            ["git", "add", "src/", "tests/", "scripts/"],
+            cwd=str(REPO), capture_output=True
+        )
+        diff = subprocess.run(
+            ["git", "diff", "--cached", "--quiet"], cwd=str(REPO), capture_output=True
+        )
+        if diff.returncode == 0:
+            log("no changes")
+            return
     else:
         log("skip: no CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY in env")
-        return
-
-    # Commit + push + PR
-    subprocess.run(
-        ["git", "add", "src/", "tests/", "scripts/"],
-        cwd=str(REPO), capture_output=True
-    )
-    diff = subprocess.run(
-        ["git", "diff", "--cached", "--quiet"], cwd=str(REPO), capture_output=True
-    )
-    if diff.returncode == 0:
-        log("no changes")
         return
 
     subprocess.run(

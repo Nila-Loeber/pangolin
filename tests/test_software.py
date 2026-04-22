@@ -29,6 +29,35 @@ class TestBranchForTask:
             assert re.match(r"^task/1(-[a-z0-9-]+)?$", b), b
 
 
+class TestVerifiedParser:
+    def test_basic_single_path(self):
+        from pangolin.software import _verified_paths
+        assert _verified_paths("VERIFIED: scripts/foo.sh") == ["scripts/foo.sh"]
+
+    def test_multiple_paths(self):
+        from pangolin.software import _verified_paths
+        out = _verified_paths("Files changed:\n- a.sh\n\nVERIFIED: scripts/a.sh, tests/b.py")
+        assert out == ["scripts/a.sh", "tests/b.py"]
+
+    def test_missing_footer(self):
+        from pangolin.software import _verified_paths
+        assert _verified_paths("I made the changes but forgot to list them.") == []
+
+    def test_case_insensitive(self):
+        from pangolin.software import _verified_paths
+        assert _verified_paths("verified: x.sh") == ["x.sh"]
+
+    def test_line_with_leading_spaces(self):
+        from pangolin.software import _verified_paths
+        assert _verified_paths("  VERIFIED: a, b") == ["a", "b"]
+
+    def test_verified_word_in_prose_does_not_match(self):
+        """Only a line whose non-colon prefix is exactly 'VERIFIED' counts;
+        prose like 'The file was verified: ...' must not match."""
+        from pangolin.software import _verified_paths
+        assert _verified_paths("The file was verified: all good.") == []
+
+
 class TestPRBodyMarker:
     def test_software_pr_body_carries_agent_marker(self):
         """software.py must wrap its PR body with AGENT_MARKER — otherwise
