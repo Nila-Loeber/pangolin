@@ -37,7 +37,57 @@ env:
   PANGOLIN_REF: main
 
 jobs:
+  # Cheap precheck: skip the heavy cycle-setup (gVisor, image pulls, pip
+  # install, proxy harden) if there's nothing to work on. Empty-queue runs
+  # used to burn ~3 min of GH-Actions budget for nothing. ~10 s now.
+  precheck:
+    runs-on: ubuntu-latest
+    outputs:
+      has_work: ${{ steps.check.outputs.has_work }}
+    steps:
+      - name: Check queue
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          REPO="${{ github.repository }}"
+          has_work="false"
+          reason=""
+          for label in inbox mode:research mode:thinking mode:writing mode:software mode:self-improve; do
+            n=$(gh issue list --repo "$REPO" --state open --label "$label" --json number --jq length 2>/dev/null || echo 0)
+            if [ "$n" -gt 0 ]; then
+              has_work="true"
+              reason="$n open issue(s) with label=$label"
+              break
+            fi
+          done
+          # Also run if an agent-PR was touched recently (owner comment /
+          # push / reopen) — pr_feedback.run() needs a chance to pick up
+          # owner comments on open pangolin-authored PRs.
+          if [ "$has_work" = "false" ]; then
+            # manual_dispatch = always run (user clicked)
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              has_work="true"
+              reason="manual workflow_dispatch"
+            fi
+          fi
+          if [ "$has_work" = "false" ]; then
+            cutoff=$(date -u -d '-90 minutes' +%Y-%m-%dT%H:%M:%SZ)
+            recent=$(gh pr list --repo "$REPO" --state open \
+              --search "pangolin:auto in:body updated:>$cutoff" \
+              --json number --jq length 2>/dev/null || echo 0)
+            if [ "$recent" -gt 0 ]; then
+              has_work="true"
+              reason="$recent open agent-PR(s) updated in last 90 min"
+            fi
+          fi
+          echo "has_work=$has_work  reason: ${reason:-empty queue, no recent PR activity}"
+          echo "has_work=$has_work" >> "$GITHUB_OUTPUT"
+
   cycle:
+    needs: precheck
+    if: needs.precheck.outputs.has_work == 'true'
     runs-on: ubuntu-latest
     # Job-level env: every step sees these in os.environ automatically.
     # Per-step env blocks are a foot-gun — a new step that forgets to
