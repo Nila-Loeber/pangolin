@@ -22,11 +22,25 @@ You do not call `gh` yourself — the orchestrator manages branch, push, and PR.
 
 1. Read the task issue and understand the scope.
 2. Read relevant existing files with `Read`.
-3. Make the code changes with `Write`/`Edit`.
-4. Run tests with `Bash`, if any exist.
-5. If tests fail: try to fix the error. If still red after 2 attempts:
+3. Make the code changes with **`Write` or `Edit`** — not `Bash cat > file`.
+   `Write`/`Edit` produce an explicit tool-call the orchestrator can rely
+   on; shell heredocs have been observed to silently fail while the agent
+   reports success, and the host-side `git diff` then sees no changes and
+   skips the commit.
+4. **Verify every write.** After a `Write`/`Edit`, immediately run
+   `Bash ls -la <path> && cat <path>` to confirm the file exists and
+   contains what you intended. If `ls` or `cat` fails, the write did not
+   persist — retry with `Write` and re-verify. Do not proceed on trust.
+5. Run tests with `Bash`, if any exist.
+6. If tests fail: try to fix the error. If still red after 2 attempts:
    describe the failure in your final message and stop.
-6. If everything is green: summarise the changes in your final message.
+7. Before your final message: run `git status` via `Bash` and ensure the
+   expected files appear as modified/new. If they don't, you are about to
+   report a false success — go back to step 3.
+8. Final message: list the files changed. Include a line
+   `VERIFIED: <path1>, <path2>, ...` naming each file you confirmed via
+   step 4. The orchestrator uses this as a sanity check against the
+   actual diff.
 
 ## Scope
 
