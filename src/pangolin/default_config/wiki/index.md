@@ -1,15 +1,15 @@
 # Wiki Index
 
-Konsolidiertes Wissen aus Issues, Research und Fragmenten. Schema: [SCHEMA.md](SCHEMA.md)
+Consolidated knowledge from issues, research, and fragments. Schema: [SCHEMA.md](SCHEMA.md)
 
-## Themen / Konzepte
+## Topics / Concepts
 
-<!-- Auto-generiert beim Lint. Manuelle Einträge werden überschrieben. -->
+<!-- Regenerated on lint. Manual entries are overwritten. -->
 
-## Personen / Referenzen
+## People / References
 
 <!-- ref/*.md -->
 
-## Projekte
+## Projects
 
 <!-- project/*.md -->
