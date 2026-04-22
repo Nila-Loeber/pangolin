@@ -26,6 +26,7 @@ import os
 import re
 import subprocess
 import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -542,6 +543,13 @@ def spawn_agent_container_tooluse(
     _ensure_proxy_running()
 
     verbose = os.environ.get("PANGOLIN_VERBOSE") == "1"
+    # Session-nonce: makes every system_prompt hash unique per spawn, so
+    # Anthropic-side prompt cache can't serve a stale/shared entry from a
+    # previous mode's call in the same cycle. Observation (nlkw smoke test,
+    # 2026-04-22): software-mode flaked multiple times in a row on GH-Actions
+    # runs that had already executed 4 other mode-calls, but zero times in
+    # 5 cold minimal-container runs — suggestive of context/cache carryover.
+    nonce_system_prompt = f"<!-- session-nonce: {uuid.uuid4()} -->\n{system_prompt}"
     allowed_csv = ",".join(
         CLI_TOOL_NAMES[t] for t in mode.allowed_tools if t in CLI_TOOL_NAMES
     )
@@ -549,7 +557,7 @@ def spawn_agent_container_tooluse(
         "claude", "-p",
         "--dangerously-skip-permissions",
         "--model", mode.model,
-        "--system-prompt", system_prompt,
+        "--system-prompt", nonce_system_prompt,
     ] + (["--allowedTools", allowed_csv] if allowed_csv else [])
     if verbose:
         # Tool-call trace in human-readable form; invaluable for diagnosing
@@ -633,6 +641,8 @@ def spawn_agent_container_direct(
     _ensure_proxy_running()
 
     verbose = os.environ.get("PANGOLIN_VERBOSE") == "1"
+    # Session-nonce — see spawn_agent_container_tooluse for rationale.
+    nonce_system_prompt = f"<!-- session-nonce: {uuid.uuid4()} -->\n{system_prompt}"
     base = _base_docker_flags(egress_tier=egress_tier)
     # Comma-separated single arg, matching claude CLI convention.
     tools_args = ["--allowedTools", allowed_tools.replace(" ", ",")] if allowed_tools.strip() else []
@@ -646,7 +656,7 @@ def spawn_agent_container_direct(
         "--dangerously-skip-permissions",
         "--output-format", "json",
         "--model", model,
-        "--system-prompt", system_prompt,
+        "--system-prompt", nonce_system_prompt,
     ] + tools_args
     if verbose:
         log(f"  [verbose] direct cmd: {_redact_token(docker_cmd)}")
