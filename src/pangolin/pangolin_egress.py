@@ -137,13 +137,20 @@ class PangolinEgress:
     def tls_clienthello(self, data: tls.ClientHelloData) -> None:
         """Decide MITM-bump vs TLS-splice per connection, by SNI + listener.
 
-        We only need to MITM api.anthropic.com (Phase A header injection +
-        Phase B body inspection). Every other host gets spliced (raw TLS
-        tunnel) so the client doesn't have to trust our runtime CA.
+        We must MITM api.anthropic.com on *both* ports — Phase A header
+        injection is required wherever the agent CLI talks to Anthropic,
+        and research-search mode happens to run on the loose port so its
+        WebFetch can reach arbitrary HTTPS hosts. A loose-port Anthropic
+        call that gets spliced ships the placeholder Authorization header
+        untouched → Anthropic rejects with 401. That manifested as a
+        `spawn_agent_container_direct FAILED: Invalid bearer token` on
+        research-mode tickets. Fix: always bump Anthropic, splice everything
+        else on loose, splice known-safe hosts on tight.
 
-        - loose port  → always splice (research-search WebFetch goes anywhere)
-        - tight port + SNI == api.anthropic.com → bump (default, no action)
-        - tight port + SNI in TIGHT_ALLOWLIST → splice
+        - SNI == api.anthropic.com → bump on any port (auth inject + body inspect)
+        - loose port + SNI != Anthropic → splice (research-search goes anywhere)
+        - tight port + SNI in TIGHT_ALLOWLIST → splice (host trusts our CA
+          via NODE_EXTRA_CA_CERTS only when needed)
         - tight port + SNI not in allowlist → fall through to MITM, gets
           a 403 in request() (or TLS-fails on clients that don't trust our
           CA — either way it's blocked)
@@ -151,11 +158,14 @@ class PangolinEgress:
         local_port = data.context.client.sockname[1]
         sni = data.client_hello.sni or ""
 
+        if sni == ANTHROPIC_HOST:
+            return  # bump on any port so Phase A + B always apply
+
         if local_port == LOOSE_PORT:
             data.ignore_connection = True
             return
 
-        if sni in TIGHT_ALLOWLIST and sni != ANTHROPIC_HOST:
+        if sni in TIGHT_ALLOWLIST:
             data.ignore_connection = True
 
     def request(self, flow: http.HTTPFlow) -> None:
