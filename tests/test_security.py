@@ -383,6 +383,36 @@ class TestMitmPhaseB:
         # Splice rule lives on SNI != api.anthropic.com
         assert "ANTHROPIC_HOST" in code
 
+    def test_anthropic_bumped_on_both_ports(self):
+        """Phase A must run on *both* tight and loose ports. research-search
+        mode routes its container via the loose proxy (WebFetch needs to
+        reach arbitrary HTTPS hosts), but its LLM calls still go to
+        api.anthropic.com — which requires the Authorization rewrite.
+
+        Regression guard: an earlier version unconditionally spliced the
+        loose port, which dropped Phase A for Anthropic calls there.
+        Symptom was `spawn_agent_container_direct FAILED: Invalid bearer
+        token` on every research-mode ticket."""
+        import ast
+        src = (REPO / "src/pangolin/pangolin_egress.py").read_text()
+        tree = ast.parse(src)
+        hello = next(
+            f for f in ast.walk(tree)
+            if isinstance(f, ast.FunctionDef) and f.name == "tls_clienthello"
+        )
+        # The ANTHROPIC_HOST == sni check must appear textually before the
+        # LOOSE_PORT splice branch. If a future refactor flips the order,
+        # loose-port Anthropic calls get spliced again → 401 regression.
+        body_src = ast.unparse(hello)
+        anth_pos = body_src.find("ANTHROPIC_HOST")
+        loose_pos = body_src.find("LOOSE_PORT")
+        assert anth_pos != -1 and loose_pos != -1
+        assert anth_pos < loose_pos, (
+            "ANTHROPIC_HOST bump check must precede LOOSE_PORT splice — "
+            "otherwise research-mode LLM calls get spliced and placeholder "
+            "token reaches Anthropic → 401"
+        )
+
     def test_server_tool_allowlist_empty_by_default(self):
         """No pangolin mode needs Anthropic's server-side tools — the
         starting policy denies them all. Changing this set should trip a
