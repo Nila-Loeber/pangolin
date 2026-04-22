@@ -54,35 +54,64 @@ jobs:
           REPO="${{ github.repository }}"
           has_work="false"
           reason=""
-          for label in inbox mode:research mode:thinking mode:writing mode:software mode:self-improve; do
-            n=$(gh issue list --repo "$REPO" --state open --label "$label" --json number --jq length 2>/dev/null || echo 0)
-            if [ "$n" -gt 0 ]; then
-              has_work="true"
-              reason="$n open issue(s) with label=$label"
-              break
-            fi
-          done
-          # Also run if an agent-PR was touched recently (owner comment /
-          # push / reopen) — pr_feedback.run() needs a chance to pick up
-          # owner comments on open pangolin-authored PRs.
+
+          # manual_dispatch = always run (owner clicked, respect it).
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            has_work="true"
+            reason="manual workflow_dispatch"
+          fi
+
+          # (1) open mode:* tickets — each is a direct task. `inbox` is
+          # intentionally NOT in this list: the inbox ticket is a permanent
+          # sentinel that always carries the label; new work there is signalled
+          # by new comments, not by the label itself (see step 2).
           if [ "$has_work" = "false" ]; then
-            # manual_dispatch = always run (user clicked)
-            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-              has_work="true"
-              reason="manual workflow_dispatch"
+            for label in mode:research mode:thinking mode:writing mode:software mode:self-improve; do
+              n=$(gh issue list --repo "$REPO" --state open --label "$label" --json number --jq length 2>/dev/null || echo 0)
+              if [ "$n" -gt 0 ]; then
+                has_work="true"
+                reason="$n open issue(s) with label=$label"
+                break
+              fi
+            done
+          fi
+
+          # (2) new inbox comments since the sentinel watermark.
+          # Watermark = last ISO-timestamp comment on the cycle-state issue.
+          if [ "$has_work" = "false" ]; then
+            sentinel=$(gh issue list --repo "$REPO" --state open --label cycle-state --limit 1 --json number --jq '.[0].number // empty')
+            if [ -n "$sentinel" ]; then
+              watermark=$(gh api "repos/$REPO/issues/$sentinel/comments" \
+                --jq '[.[] | select(.body | test("^2[0-9]{3}-[0-9]"))] | last // empty | .body' 2>/dev/null || echo "")
+              watermark="${watermark:-1970-01-01T00:00:00Z}"
+              latest=$(gh issue list --repo "$REPO" --state open --label inbox \
+                --json comments --jq '[.[] | .comments[]? | .createdAt] | max // empty' 2>/dev/null)
+              latest="${latest:-1970-01-01T00:00:00Z}"
+              if [ "$latest" \> "$watermark" ]; then
+                has_work="true"
+                reason="new inbox comment ($latest > $watermark)"
+              fi
             fi
           fi
+
+          # (3) owner comments on open agent-authored PRs (pr_feedback trigger).
+          # Count comments whose body does NOT contain the AGENT_MARKER —
+          # those are owner-authored. If any open agent-PR has such comments,
+          # pr_feedback has something to look at.
           if [ "$has_work" = "false" ]; then
-            cutoff=$(date -u -d '-90 minutes' +%Y-%m-%dT%H:%M:%SZ)
-            recent=$(gh pr list --repo "$REPO" --state open \
-              --search "pangolin:auto in:body updated:>$cutoff" \
-              --json number --jq length 2>/dev/null || echo 0)
-            if [ "$recent" -gt 0 ]; then
-              has_work="true"
-              reason="$recent open agent-PR(s) updated in last 90 min"
-            fi
+            prs=$(gh pr list --repo "$REPO" --state open --search "pangolin:auto in:body" --json number --jq '.[].number' 2>/dev/null || echo "")
+            for pr in $prs; do
+              oc=$(gh pr view "$pr" --repo "$REPO" --json comments \
+                --jq '[.comments[] | select(.body | contains("<!-- pangolin:auto -->") | not)] | length' 2>/dev/null || echo 0)
+              if [ "$oc" -gt 0 ]; then
+                has_work="true"
+                reason="$oc owner comment(s) on open agent-PR #$pr"
+                break
+              fi
+            done
           fi
-          echo "has_work=$has_work  reason: ${reason:-empty queue, no recent PR activity}"
+
+          echo "has_work=$has_work  reason: ${reason:-empty queue, no new inbox comments, no owner comments on agent-PRs}"
           echo "has_work=$has_work" >> "$GITHUB_OUTPUT"
 
   cycle:
