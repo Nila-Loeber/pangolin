@@ -551,17 +551,19 @@ def spawn_agent_container_tooluse(
         "--model", mode.model,
         "--system-prompt", system_prompt,
     ] + (["--allowedTools", allowed_csv] if allowed_csv else [])
-    # Timeout sized for legitimate work: thinking-mode wiki-ingest of a single
-    # fragment, software-mode of a small code task. Longer hangs typically mean
-    # the agent is wedged — a known case is software-mode running in
-    # pangolin-agent-llm: the LLM image deliberately omits a Posix shell, so the
-    # Bash tool errors out and Opus loops on retries until docker kills it.
+    # Timeout sized for legitimate tool-use loops: mid-size software tasks
+    # on Opus can run 10–15 iterations (Write/Edit + Bash verify + test),
+    # which saturates ~5–7 min of wallclock. 8 min covers that with headroom
+    # for a retry. Longer hangs typically mean the agent is wedged — a known
+    # case is software-mode running in pangolin-agent-llm: the LLM image
+    # deliberately omits a Posix shell, so the Bash tool errors out and Opus
+    # loops on retries until docker kills it.
     try:
         result = subprocess.run(
-            cmd, input=user_prompt, capture_output=True, text=True, timeout=180,
+            cmd, input=user_prompt, capture_output=True, text=True, timeout=480,
         )
     except subprocess.TimeoutExpired:
-        log(f"  🔴 container agent {mode.name} TIMEOUT (180s)")
+        log(f"  🔴 container agent {mode.name} TIMEOUT (480s)")
         return {}
     if result.returncode != 0:
         log(f"  🔴 container agent {mode.name} FAILED: exit {result.returncode}; "

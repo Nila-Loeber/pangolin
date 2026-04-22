@@ -141,9 +141,9 @@ pangolin version               # print installed version
 
 ## Known limitations (alpha)
 
-- **Software-mode timeout is 180s.** Complex code tasks inherently loop
-  on tool-use iterations; a single cycle can't complete them. To
-  continue work, comment on the open PR — the next cycle's PR-feedback
+- **Software-mode timeout is 480s.** Larger tool-use loops still won't
+  finish in one go. To continue work, comment on the open PR — the next
+  cycle's PR-feedback
   loop picks up your comment, classifies it, and iterates on the same
   branch.
 - **Log uploads from GH Actions runners can flake.** Not a pangolin bug;

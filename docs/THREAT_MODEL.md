@@ -253,7 +253,7 @@ forcing all outbound through the proxy, kill == blocked.
   `HTTPS_PROXY`) was judged not worth the cost for a single-user alpha.
   Every HTTPS_PROXY-respecting library (pip, gh, httpx, requests) still
   goes through the proxy.
-- **Software-mode timeout (180s).** Complex tool-use loops inherently
+- **Software-mode timeout (480s).** Larger tool-use loops can still
   exceed this. Not a security issue — the timeout is there to kill a
   wedged agent, not to bound exfil.
 - **PR-feedback Phase 2 (inline threads + resolution).** Only PR-level
