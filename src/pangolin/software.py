@@ -120,8 +120,13 @@ def run():
     repo_name = gh("repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner")
     os.environ["GH_REPO"] = repo_name
 
+    # AGENT_MARKER in body: how `pr_feedback.run()` detects this as an
+    # agent-authored PR. Without it, owner comments on the PR are
+    # invisible to the feedback loop and the PR can't be iterated on.
+    from pangolin.core import wrap_agent_body
+    pr_body = wrap_agent_body(f"Automated code task for #{number}.")
     pr_url = gh("pr", "create", "--title", f"task #{number}: {task['title']}",
-                "--body", f"Automated code task for #{number}.",
+                "--body", pr_body,
                 "--base", "main", "--head", branch)
     gh("issue", "comment", str(number), "--body",
        f"🤖 **software-agent**: PR erstellt — {pr_url}")

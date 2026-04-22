@@ -27,3 +27,30 @@ class TestBranchForTask:
         for title in ["Hello, World!", "ä/ü:ß", "__foo__bar__"]:
             b = _branch_for_task(1, title)
             assert re.match(r"^task/1(-[a-z0-9-]+)?$", b), b
+
+
+class TestPRBodyMarker:
+    def test_software_pr_body_carries_agent_marker(self):
+        """software.py must wrap its PR body with AGENT_MARKER — otherwise
+        pr_feedback.run() can't see the PR (it filters by AGENT_MARKER in
+        body) and owner comments on software PRs are silently ignored.
+
+        Observed on a chained smoke test: the PR was opened but cycle 2's
+        pr-feedback phase reported `no owner comments awaiting response`
+        because the software PR lacked the marker. Regression guard:
+        assert software.py still calls wrap_agent_body on the PR body."""
+        from pathlib import Path
+        code = (Path(__file__).parent.parent / "src/pangolin/software.py").read_text()
+        assert "wrap_agent_body" in code, (
+            "software.py no longer uses wrap_agent_body for PR body — "
+            "this silently breaks pr_feedback's ability to iterate on the PR"
+        )
+        # And the wrapped value is what gets passed to gh pr create
+        assert "--body" in code
+        # A stricter check: the line that constructs the PR body must
+        # reference wrap_agent_body near it
+        body_construct_idx = code.find("pr_body = wrap_agent_body")
+        pr_create_idx = code.find('gh("pr", "create"')
+        assert 0 < body_construct_idx < pr_create_idx, (
+            "Expected `pr_body = wrap_agent_body(...)` before `gh pr create`"
+        )
