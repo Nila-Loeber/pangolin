@@ -1647,16 +1647,56 @@ class CycleRunner:
                 if rel.startswith("fragment/") or rel in ("SCHEMA.md", "index.md", "log.md"):
                     continue
                 existing_pages.append(f"wiki/{rel}")
-        # Detect absorb-target pages by scanning fragment bodies for
-        # `wiki/<slug>.md` references and including those pages' full
-        # content. Without the body, the agent refuses to revise in place
-        # ("cannot safely rewrite full page without body") — observed
-        # nlkw re-ingest 2026-04-23 skipping all 5 batch-1 fragments.
+        # Detect absorb-target pages with three overlapping heuristics:
+        #   (a) `wiki/<slug>.md` reference anywhere in the fragment body
+        #   (b) bare `<slug>` (word-boundary) of an existing page in the
+        #       fragment body or title — research fragments often name
+        #       the topic without the wiki/ prefix
+        #   (c) `-issueN-` in the filename → fetch issue N's body and
+        #       scan it for `wiki/<slug>.md` — the research ticket that
+        #       spawned the fragment usually carries the target path
+        #
+        # Without these the agent refuses to revise in place ("cannot
+        # safely rewrite full page without body") — observed on nlkw
+        # re-ingest 2026-04-23 skipping 5 batch-1 fragments on both the
+        # body-only scan and the slug scan because research-agent outputs
+        # don't always echo the wiki path.
         absorb_targets: set[Path] = set()
         slug_pattern = re.compile(r"\bwiki/([a-z0-9][a-z0-9-]*)\.md\b")
+        existing_slugs = {p.stem: p for p in wiki_dir.glob("*.md")
+                          if p.name not in ("SCHEMA.md", "index.md", "log.md")}
+        # (a) + (b): scan fragment bodies
         for blob in fragment_blobs:
             for m in slug_pattern.finditer(blob):
                 slug = m.group(1)
+                if slug in ("SCHEMA", "index", "log", "fragment"):
+                    continue
+                target = wiki_dir / f"{slug}.md"
+                if target.exists():
+                    absorb_targets.add(target)
+            for slug, p in existing_slugs.items():
+                if re.search(r"\b" + re.escape(slug) + r"\b", blob):
+                    absorb_targets.add(p)
+        # (c): fetch source-issue bodies and scan them for wiki-refs.
+        # Bounded: at most one `gh issue view` per fragment.
+        issue_num_pat = re.compile(r"-issue(\d+)-")
+        seen_issues: set[str] = set()
+        for f in sorted(fragdir.glob("*.md")):
+            m = issue_num_pat.search(f.name)
+            if not m:
+                continue
+            issue_num = m.group(1)
+            if issue_num in seen_issues:
+                continue
+            seen_issues.add(issue_num)
+            try:
+                body = gh("issue", "view", issue_num, "--json", "body", "--jq", ".body", check=False)
+            except Exception:
+                continue
+            if not body:
+                continue
+            for sm in slug_pattern.finditer(body):
+                slug = sm.group(1)
                 if slug in ("SCHEMA", "index", "log", "fragment"):
                     continue
                 target = wiki_dir / f"{slug}.md"
