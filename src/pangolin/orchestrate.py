@@ -1647,17 +1647,54 @@ class CycleRunner:
                 if rel.startswith("fragment/") or rel in ("SCHEMA.md", "index.md", "log.md"):
                     continue
                 existing_pages.append(f"wiki/{rel}")
+        # Detect absorb-target pages by scanning fragment bodies for
+        # `wiki/<slug>.md` references and including those pages' full
+        # content. Without the body, the agent refuses to revise in place
+        # ("cannot safely rewrite full page without body") — observed
+        # nlkw re-ingest 2026-04-23 skipping all 5 batch-1 fragments.
+        absorb_targets: set[Path] = set()
+        slug_pattern = re.compile(r"\bwiki/([a-z0-9][a-z0-9-]*)\.md\b")
+        for blob in fragment_blobs:
+            for m in slug_pattern.finditer(blob):
+                slug = m.group(1)
+                if slug in ("SCHEMA", "index", "log", "fragment"):
+                    continue
+                target = wiki_dir / f"{slug}.md"
+                if target.exists():
+                    absorb_targets.add(target)
+        absorb_blobs = []
+        abs_bytes = 0
+        ABSORB_CAP = 50_000
+        for p in sorted(absorb_targets):
+            try:
+                body = p.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            rel = p.relative_to(REPO)
+            if abs_bytes + len(body) > ABSORB_CAP:
+                absorb_blobs.append(
+                    f"\n[{rel}: TRUNCATED — total absorb-target bytes cap reached]"
+                )
+                break
+            absorb_blobs.append(f"\n--- EXISTING PAGE: {rel} ---\n{body}")
+            abs_bytes += len(body)
         ingest_schema = SCHEMAS.get("wiki-ingest", {})
         system_full = (
             f"{wiki_ssot}\n\n--- SCHEMA.md ---\n{schema_doc}\n\n"
             f"Respond with a single JSON object matching this schema: "
             f"{json.dumps(ingest_schema)}"
         )
+        absorb_section = (
+            f"\n--- EXISTING PAGES (absorb targets — full body; revise in place "
+            f"per wiki-ingest SSoT integration rules) ---"
+            + "".join(absorb_blobs) + "\n\n"
+        ) if absorb_blobs else ""
         user_prompt = (
             f"--- WATERMARK ---\n{watermark}\n\n"
             f"--- EXISTING WIKI PAGES (names only) ---\n"
-            + ("\n".join(existing_pages) if existing_pages else "(none yet)") + "\n\n"
-            f"--- UNPROCESSED FRAGMENTS ---"
+            + ("\n".join(existing_pages) if existing_pages else "(none yet)") + "\n"
+            + absorb_section
+            + f"--- UNPROCESSED FRAGMENTS ---"
             + "".join(fragment_blobs) + "\n\n"
             f"--- TASK ---\n"
             f"Process fragments whose captured_at > watermark. Emit wiki pages via "
