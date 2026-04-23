@@ -78,6 +78,11 @@ jobs:
 
           # (2) new inbox comments since the sentinel watermark.
           # Watermark = last ISO-timestamp comment on the cycle-state issue.
+          # Must apply the same filters triage uses: skip bot/[bot]/-agent
+          # authors AND skip comments containing AGENT_MARKER ("pangolin:auto")
+          # — otherwise pangolin's own progress comments loop the precheck
+          # back to "has_work=true" forever without triage ever advancing
+          # the watermark (it sees 0 real items, nothing to write).
           if [ "$has_work" = "false" ]; then
             sentinel=$(gh issue list --repo "$REPO" --state open --label cycle-state --limit 1 --json number --jq '.[0].number // empty')
             if [ -n "$sentinel" ]; then
@@ -85,11 +90,15 @@ jobs:
                 --jq '[.[] | select(.body | test("^2[0-9]{3}-[0-9]"))] | last // empty | .body' 2>/dev/null || echo "")
               watermark="${watermark:-1970-01-01T00:00:00Z}"
               latest=$(gh issue list --repo "$REPO" --state open --label inbox \
-                --json comments --jq '[.[] | .comments[]? | .createdAt] | max // empty' 2>/dev/null)
+                --json comments --jq '
+                  [.[] | .comments[]?
+                   | select((.author.login | test("\\[bot\\]$|-agent$")) | not)
+                   | select((.body | contains("<!-- pangolin:auto -->")) | not)
+                   | .createdAt] | max // empty' 2>/dev/null)
               latest="${latest:-1970-01-01T00:00:00Z}"
               if [ "$latest" \> "$watermark" ]; then
                 has_work="true"
-                reason="new inbox comment ($latest > $watermark)"
+                reason="new human inbox comment ($latest > $watermark)"
               fi
             fi
           fi
