@@ -55,7 +55,34 @@ Path rules (enforced by host):
 ### (1) absorb
 Fragment fits an existing page. → `writes` entry with `action: "edit"`,
 path of the existing page, **full new content** (the agent provides the
-entire integrated page, not a diff). Reference the fragment file in prose.
+entire integrated page, not a diff).
+
+**Integration rules — this is what "absorb" means, and it is not negotiable:**
+
+- **Revise in place, don't append.** If the fragment confirms a body claim,
+  attach the citation **inline** next to that claim (foot-anchor, parenthetical,
+  or next to the sentence it supports). Do NOT create a new top-level section
+  like `## Faktencheck` that reprises the body and hangs sources underneath.
+  One page, one narrative.
+- **Correct in place when the fragment contradicts the body.** Rewrite the
+  relevant sentence or paragraph with the corrected fact; move the superseded
+  claim either out entirely or into a `<!-- historical: … -->` comment if it
+  has documentation value. Don't leave both the wrong and right version.
+- **Fold new supporting material into existing sections.** A fragment that
+  adds a concrete number, date, or detail belongs in the body paragraph that
+  already handled the topic, not in its own new section.
+- **Sources at the bottom.** The `## Quellen` (or equivalent) section is the
+  right place for the reference list. Add new URLs/citations there, keep
+  existing entries. Don't duplicate.
+- **The fragment file itself can be referenced once in a comment block** at
+  the end of the page like `<!-- absorbed-from: wiki/fragment/X.md -->` —
+  this lets pangolin trace which fragment contributed which edit without
+  polluting the prose.
+
+Reader test: after absorb, the page should read as **one coherent, current
+article**, not as the old article with a review panel stapled to the end.
+If someone opens the page fresh and can tell "this used to be wrong, then
+someone fact-checked it," you've failed the integration test.
 
 ### (2) new-topic
 Independent concept, no page yet. → `writes` with `action: "create"`,
