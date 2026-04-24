@@ -1179,6 +1179,33 @@ def commit_and_pr(branch: str, ts: str) -> str | None:
         ["git", "commit", "-m", f"cycle: run {ts}"],
         cwd=str(REPO), capture_output=True, check=True,
     )
+    # Rebase onto latest origin/main before pushing. Without this, a cycle
+    # that started when main was at SHA_A will create a PR whose base is
+    # stale if another cycle (or a human commit) landed SHA_B during our
+    # run. When both sides touched overlapping files (wiki/index.md is the
+    # usual culprit), GitHub marks the PR as CONFLICTING and no merge is
+    # possible. Rebasing here puts our single cycle commit on top of fresh
+    # main, so the PR is always against current HEAD.
+    #
+    # If the rebase fails due to a real file-level conflict, abort and
+    # raise — the work isn't lost (the cycle commit is in the reflog), but
+    # surfacing the conflict loudly is better than silently pushing a
+    # zombie branch that can't be merged.
+    subprocess.run(["git", "fetch", "origin", "main"],
+                   cwd=str(REPO), capture_output=True, check=True)
+    rebase = subprocess.run(
+        ["git", "rebase", "origin/main"],
+        cwd=str(REPO), capture_output=True, text=True,
+    )
+    if rebase.returncode != 0:
+        subprocess.run(["git", "rebase", "--abort"],
+                       cwd=str(REPO), capture_output=True)
+        raise RuntimeError(
+            f"rebase of {branch!r} onto origin/main failed — branch held "
+            "back. Likely cause: another cycle or human commit touched the "
+            "same files (usually wiki/index.md) during this run. rebase "
+            f"stderr: {rebase.stderr.strip()[:500]}"
+        )
     subprocess.run(
         ["git", "push", "origin", branch],
         cwd=str(REPO), capture_output=True, check=True,
