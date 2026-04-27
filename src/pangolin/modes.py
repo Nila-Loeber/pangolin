@@ -162,6 +162,22 @@ SCHEMAS = {
                     "required": ["fragment", "reason"],
                 },
             },
+            "pages_per_ticket": {
+                "type": "array",
+                "description": "For each inbox ticket whose fragments were absorbed/synthesised in this run, list the resulting wiki page paths. Used to render Wiki-page links in the inbox-summary comment.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "issue": {"type": "integer"},
+                        "pages": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Wiki page paths (e.g. wiki/foo.md) created or edited in response to this ticket's fragments.",
+                        },
+                    },
+                    "required": ["issue", "pages"],
+                },
+            },
         },
         "required": ["writes"],
     },

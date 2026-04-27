@@ -41,6 +41,63 @@ from pangolin.tools import CLI_TOOL_NAMES, ToolConfig, ToolExecutor
 log = make_logger("pangolin")
 
 
+# Match `- [title](path) — description` (em dash). Used by the deterministic
+# wiki-index renderer to preserve existing titles/descriptions when files
+# haven't moved, so the index stays stable across cycles.
+_INDEX_LINE_RE = re.compile(r"^\s*-\s+\[([^\]]+)\]\(([^)]+)\)(?:\s+—\s+(.*))?\s*$")
+
+
+def _parse_index_entries(text: str) -> dict[str, tuple[str, str]]:
+    """Return {rel_path: (title, description)} parsed from an index.md body."""
+    out: dict[str, tuple[str, str]] = {}
+    for line in text.splitlines():
+        m = _INDEX_LINE_RE.match(line)
+        if m:
+            title, path, desc = m.group(1), m.group(2), (m.group(3) or "").strip()
+            out[path] = (title, desc)
+    return out
+
+
+def _extract_title_and_desc(p: Path) -> tuple[str, str]:
+    """Best-effort title + 1-line description for a markdown file.
+
+    - Title: first H1; falls back to slugified filename.
+    - Description: first non-empty line that's not heading/blockquote/frontmatter,
+      truncated to 120 chars. May be empty if the file has only headings.
+    """
+    title = p.stem.replace("-", " ").replace("_", " ").title()
+    desc = ""
+    try:
+        raw = p.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return title, desc
+    lines = raw.splitlines()
+    in_frontmatter = False
+    title_set = False
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if i == 0 and s == "---":
+            in_frontmatter = True
+            continue
+        if in_frontmatter:
+            if s == "---":
+                in_frontmatter = False
+            continue
+        if not s:
+            continue
+        if s.startswith("# ") and not title_set:
+            title = s[2:].strip()
+            title_set = True
+            continue
+        if s.startswith("#") or s.startswith(">"):
+            continue
+        if not desc:
+            desc = s[:120]
+            if title_set:
+                break
+    return title, desc
+
+
 # ── Sentinel watermark (idempotent across unmerged PRs) ──
 #
 # The inbox watermark used to live in .inbox-watermark (a file in the repo).
@@ -1391,6 +1448,10 @@ class CycleRunner:
         self.start_iso: str = ""
         # Populated by _commit():
         self.pr_url: str | None = None
+        # Populated by _phase_wiki_ingest: {issue_number: [wiki/path.md, …]}.
+        # Used by _phase_summary to append "Wiki:" footer to inbox-summary
+        # comments so Nila can jump from a ticket to the resulting pages.
+        self.pages_per_ticket: dict[int, list[str]] = {}
 
     # Lazy provider cache. Logs the auth mode the first time each provider
     # is instantiated — so the operator knows whether they're burning
@@ -1809,102 +1870,112 @@ class CycleRunner:
         if new_wm and new_wm > watermark:
             (REPO / ".ingest-watermark").write_text(new_wm + "\n", encoding="utf-8")
             log(f"  wiki-ingest: watermark → {new_wm}")
-        # Append a dated log entry.
+        # Append a dated log entry — only when the run actually changed the
+        # wiki. A pure no-op cycle (no writes, no watermark advance) used to
+        # still get a "0 absorbed, 0 new topics" line, which by itself
+        # produced a diff and forced a cycle PR. Gating on real work makes
+        # no-op cycles produce zero diff → no PR.
         log_entry = (result.get("log_entry") or "").strip()
-        if log_entry:
+        wm_advanced = bool(new_wm and new_wm > watermark)
+        if log_entry and (written or wm_advanced):
             ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
             line = f"{ts} — {log_entry}\n"
             log_path = REPO / "wiki" / "log.md"
             log_path.parent.mkdir(parents=True, exist_ok=True)
             with log_path.open("a", encoding="utf-8") as f:
                 f.write(line)
+        elif log_entry:
+            log(f"  wiki-ingest: no-op run, skipping log entry: {log_entry}")
         skipped = result.get("skipped_fragments") or []
         for s in skipped:
             log(f"  wiki-ingest: skipped {s.get('fragment')} ({s.get('reason')})")
+        # Capture issue → pages mapping for the summary phase.
+        for entry in result.get("pages_per_ticket") or []:
+            try:
+                n = int(entry.get("issue", 0))
+            except (TypeError, ValueError):
+                continue
+            pages = [p for p in (entry.get("pages") or []) if isinstance(p, str)]
+            if n and pages:
+                self.pages_per_ticket.setdefault(n, []).extend(pages)
+        if self.pages_per_ticket:
+            log(f"  wiki-ingest: page-links for {len(self.pages_per_ticket)} ticket(s)")
         subprocess.run(
             ["bash", str(validate_output_script()), "wiki-ingest"],
             cwd=str(REPO),
         )
 
     # ── WIKI INDEX (regenerate after ingest) ──
-    # Direct agent: takes the wiki directory listing + current index.md,
-    # returns the updated index as a string. Orchestrator writes it.
-    # No tools needed — pure text generation.
+    # Pure-Python deterministic renderer. Walks wiki/ + drafts/, groups by
+    # section, preserves existing titles/descriptions for known paths, and
+    # extracts title/description from the file for new ones. No LLM call —
+    # was the source of every-cycle drift (link-prefix flips like
+    # `../drafts/` ↔ `draft/`, adjacent-entry swaps) that produced spurious
+    # cycle PRs even on no-op runs.
 
     def _phase_wiki_index(self) -> None:
         wiki_dir = REPO / "wiki"
         if not wiki_dir.is_dir():
             return
         log("=== WIKI INDEX ===")
-        # Build a directory listing of all wiki pages (excluding fragments)
-        listing = []
-        for p in sorted(wiki_dir.rglob("*.md")):
-            rel = p.relative_to(wiki_dir)
-            if str(rel).startswith("fragment/"):
-                continue  # fragments are raw, not indexed
-            # Read first non-empty line as a description hint
-            first_line = ""
-            try:
-                for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
-                    stripped = line.strip().lstrip("#").strip()
-                    if stripped:
-                        first_line = stripped[:100]
-                        break
-            except OSError:
-                pass
-            listing.append(f"- {rel}: {first_line}")
-        current_index = (
-            (wiki_dir / "index.md").read_text() if (wiki_dir / "index.md").exists() else ""
+        index_path = wiki_dir / "index.md"
+        existing_text = (
+            index_path.read_text(encoding="utf-8") if index_path.exists() else ""
         )
+        existing = _parse_index_entries(existing_text)
 
-        index_prompt = (
-            f"--- CURRENT INDEX ---\n{current_index}\n\n"
-            f"--- WIKI PAGES ---\n" + "\n".join(listing) + "\n\n"
-            f"--- TASK ---\nGenerate the complete updated wiki/index.md. "
-            f"Group pages by type: Topics (wiki/*.md), References (wiki/ref/*.md), "
-            f"Projects (wiki/project/*.md), Drafts (wiki/draft/*.md). "
-            f"Each entry: `- [slug](path) — one-line description`. "
-            f"Exclude: index.md, log.md, SCHEMA.md, fragment/. "
-            f"Start with a note that this file is auto-generated. "
-            f"Keep empty sections with _(still empty)_."
+        def entry_for(rel_path: str, abs_path: Path) -> str:
+            if rel_path in existing:
+                title, desc = existing[rel_path]
+            else:
+                title, desc = _extract_title_and_desc(abs_path)
+            return (
+                f"- [{title}]({rel_path}) — {desc}"
+                if desc else f"- [{title}]({rel_path})"
+            )
+
+        skip = {"index.md", "log.md", "SCHEMA.md"}
+        topics, refs, projects, drafts = [], [], [], []
+        for p in sorted(wiki_dir.rglob("*.md")):
+            rel = p.relative_to(wiki_dir).as_posix()
+            if rel in skip or rel.startswith("fragment/"):
+                continue
+            if rel.startswith("ref/"):
+                refs.append(entry_for(rel, p))
+            elif rel.startswith("project/"):
+                projects.append(entry_for(rel, p))
+            elif "/" not in rel:
+                topics.append(entry_for(rel, p))
+            # nested dirs we don't recognize are skipped silently
+
+        drafts_dir = REPO / "drafts"
+        if drafts_dir.is_dir():
+            for p in sorted(drafts_dir.rglob("*.md")):
+                rel = "../" + p.relative_to(REPO).as_posix()
+                drafts.append(entry_for(rel, p))
+
+        def section(title: str, items: list[str], empty_note: str = "") -> str:
+            body = "\n".join(items) if items else (
+                f"_(still empty)_{empty_note}"
+            )
+            return f"## {title}\n\n{body}\n"
+
+        new_index = (
+            "# Wiki Index\n\n"
+            "> This file is auto-generated via wiki ingest and agent processing.\n\n"
+            + section("Topics", topics) + "\n"
+            + section("References", refs) + "\n"
+            + section("Projects", projects) + "\n"
+            + section("Drafts", drafts) + "\n"
+            + "## Fragments\n\n"
+            "_(still empty)_ — Quarantäne-Zone für unverifizierten "
+            "Research-Output; wird vom Ingest-Zyklus geleert.\n"
         )
-        index_schema = SCHEMAS.get("wiki-index", {})
-        # Wiki-index is a pure text-gen task (stateless, no tools). Reuse the
-        # summary mode's model — same profile (cheap, deterministic formatting).
-        summary_mode = self.modes["summary"]
-        if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
-            system_full = (
-                f"Respond with a single JSON object matching this schema: "
-                f"{json.dumps(index_schema)}"
-            )
-            result = spawn_agent_container_direct(
-                system_prompt=system_full,
-                user_prompt=index_prompt,
-                model=summary_mode.model,
-                egress_tier=summary_mode.egress,
-                timeout=120,
-            )
+        if new_index != existing_text:
+            index_path.write_text(new_index, encoding="utf-8")
+            log(f"  index.md rewritten ({len(new_index)} chars)")
         else:
-            # In-process fallback
-            idx_provider = self.get_provider("anthropic")
-            system = (
-                f"Respond with a single JSON object matching this schema: "
-                f"{json.dumps(index_schema)}"
-            )
-            chat_result = idx_provider.chat(
-                system=system, user=index_prompt,
-                model=summary_mode.model, json_schema=index_schema,
-            )
-            try:
-                result = json.loads(chat_result.text)
-            except json.JSONDecodeError:
-                result = {}
-        new_index = result.get("index_md", "")
-        if new_index.strip():
-            (wiki_dir / "index.md").write_text(new_index, encoding="utf-8")
-            log(f"  index.md updated ({len(new_index)} chars)")
-        else:
-            log("  index.md: agent returned empty, keeping current")
+            log("  index.md: unchanged")
 
     # ── THINKING + WRITING (per-issue) ──
 
@@ -2176,6 +2247,15 @@ class CycleRunner:
 
     def _phase_summary(self) -> None:
         log("=== SUMMARY ===")
+        # A: no PR means no real cycle work happened. The summary used to
+        # fire anyway and the LLM, given a huge INBOX payload (full ticket
+        # bodies + comments) and a near-empty CHANGED list, would
+        # hallucinate by paraphrasing inbox topics as if the cycle had
+        # produced them ("Expanded 'getting-fried' essay series..." when
+        # the cycle PR was just wiki/index.md drift).
+        if not self.pr_url:
+            log("  no PR → skipping summary")
+            return
         mode = self.modes["summary"]
         inbox = gh(
             "issue", "list", "--state", "open", "--label", "inbox", "--limit", "50",
@@ -2190,21 +2270,74 @@ class CycleRunner:
             "issue", "list", "--state", "open", "--limit", "100",
             "--json", "number,title,body,labels,createdAt,author", check=False,
         )
-        changed = subprocess.run(
+        # Pass full diff stat (file + line counts) rather than just file
+        # names — gives the agent concrete numeric evidence of what
+        # actually changed, making "describe the inbox content instead"
+        # harder. Fall back to --name-only on stat failure.
+        changed_names = subprocess.run(
             ["git", "diff", "--name-only", "HEAD~1..HEAD"],
             cwd=str(REPO), capture_output=True, text=True,
         ).stdout
+        changed_stat = subprocess.run(
+            ["git", "diff", "--stat", "HEAD~1..HEAD"],
+            cwd=str(REPO), capture_output=True, text=True,
+        ).stdout
+        # B: trivial-only changes (index/log churn from older cycles, or
+        # watermark-only updates) are also a no-op signal. Skip rather
+        # than risk the same hallucination class.
+        TRIVIAL = {
+            "wiki/index.md", "wiki/log.md", ".ingest-watermark",
+        }
+        non_trivial = [
+            p for p in changed_names.splitlines()
+            if p.strip() and p.strip() not in TRIVIAL
+        ]
+        if not non_trivial:
+            log("  only trivial changes → skipping summary")
+            return
         ssot = resolve_config("docs/inbox-summary.md").read_text()
         user_prompt = (
             f"--- INBOX ---\n{inbox}\n\n--- SPAWNED ---\n{spawned}\n\n"
-            f"--- CHANGED ---\n{changed}\n\n--- PR ---\n{self.pr_url or 'none'}\n\n"
+            f"--- CHANGED (names) ---\n{changed_names}\n\n"
+            f"--- CHANGED (stat) ---\n{changed_stat}\n\n"
+            f"--- PR ---\n{self.pr_url or 'none'}\n\n"
             f"--- TASK ---\nProduce summary comments."
         )
         result = run_direct(
             mode, system=ssot, user=user_prompt, provider=self.get_provider(mode.provider),
         )
         if result:
-            execute_summary_comments(result.get("comments", []), summary_given)
+            comments = result.get("comments", []) or []
+            # Append a "Wiki:" footer with absolute URLs to each ticket's
+            # resulting wiki pages. Done host-side (not in the LLM prompt)
+            # to keep the link list authoritative — the agent can't drop,
+            # invent, or mangle paths.
+            if self.pages_per_ticket:
+                repo = gh(
+                    "repo", "view", "--json", "nameWithOwner",
+                    "-q", ".nameWithOwner", check=False,
+                ) or ""
+                repo = repo.strip()
+                for c in comments:
+                    try:
+                        n = int(c.get("issue", 0))
+                    except (TypeError, ValueError):
+                        continue
+                    pages = self.pages_per_ticket.get(n)
+                    if not pages or not repo:
+                        continue
+                    seen: set[str] = set()
+                    links = []
+                    for p in pages:
+                        if p in seen:
+                            continue
+                        seen.add(p)
+                        url = f"https://github.com/{repo}/blob/main/{p}"
+                        links.append(f"- {url}")
+                    if links:
+                        body = (c.get("body") or "").rstrip()
+                        c["body"] = body + "\n\n**Wiki:**\n" + "\n".join(links)
+            execute_summary_comments(comments, summary_given)
 
     # ── CYCLE SUMMARY (Epic 12: observability) ──
 
