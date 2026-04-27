@@ -1448,6 +1448,10 @@ class CycleRunner:
         self.start_iso: str = ""
         # Populated by _commit():
         self.pr_url: str | None = None
+        # Populated by _phase_wiki_ingest: {issue_number: [wiki/path.md, …]}.
+        # Used by _phase_summary to append "Wiki:" footer to inbox-summary
+        # comments so Nila can jump from a ticket to the resulting pages.
+        self.pages_per_ticket: dict[int, list[str]] = {}
 
     # Lazy provider cache. Logs the auth mode the first time each provider
     # is instantiated — so the operator knows whether they're burning
@@ -1885,6 +1889,17 @@ class CycleRunner:
         skipped = result.get("skipped_fragments") or []
         for s in skipped:
             log(f"  wiki-ingest: skipped {s.get('fragment')} ({s.get('reason')})")
+        # Capture issue → pages mapping for the summary phase.
+        for entry in result.get("pages_per_ticket") or []:
+            try:
+                n = int(entry.get("issue", 0))
+            except (TypeError, ValueError):
+                continue
+            pages = [p for p in (entry.get("pages") or []) if isinstance(p, str)]
+            if n and pages:
+                self.pages_per_ticket.setdefault(n, []).extend(pages)
+        if self.pages_per_ticket:
+            log(f"  wiki-ingest: page-links for {len(self.pages_per_ticket)} ticket(s)")
         subprocess.run(
             ["bash", str(validate_output_script()), "wiki-ingest"],
             cwd=str(REPO),
@@ -2292,7 +2307,37 @@ class CycleRunner:
             mode, system=ssot, user=user_prompt, provider=self.get_provider(mode.provider),
         )
         if result:
-            execute_summary_comments(result.get("comments", []), summary_given)
+            comments = result.get("comments", []) or []
+            # Append a "Wiki:" footer with absolute URLs to each ticket's
+            # resulting wiki pages. Done host-side (not in the LLM prompt)
+            # to keep the link list authoritative — the agent can't drop,
+            # invent, or mangle paths.
+            if self.pages_per_ticket:
+                repo = gh(
+                    "repo", "view", "--json", "nameWithOwner",
+                    "-q", ".nameWithOwner", check=False,
+                ) or ""
+                repo = repo.strip()
+                for c in comments:
+                    try:
+                        n = int(c.get("issue", 0))
+                    except (TypeError, ValueError):
+                        continue
+                    pages = self.pages_per_ticket.get(n)
+                    if not pages or not repo:
+                        continue
+                    seen: set[str] = set()
+                    links = []
+                    for p in pages:
+                        if p in seen:
+                            continue
+                        seen.add(p)
+                        url = f"https://github.com/{repo}/blob/main/{p}"
+                        links.append(f"- {url}")
+                    if links:
+                        body = (c.get("body") or "").rstrip()
+                        c["body"] = body + "\n\n**Wiki:**\n" + "\n".join(links)
+            execute_summary_comments(comments, summary_given)
 
     # ── CYCLE SUMMARY (Epic 12: observability) ──
 

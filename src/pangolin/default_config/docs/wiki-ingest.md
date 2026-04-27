@@ -41,6 +41,9 @@ Return one JSON object matching this schema:
   "log_entry": "<n> absorbed, <m> new topics, <k> skipped",
   "skipped_fragments": [
     {"fragment": "wiki/fragment/<name>.md", "reason": "<short>"}
+  ],
+  "pages_per_ticket": [
+    {"issue": <n>, "pages": ["wiki/<slug>.md", "wiki/ref/<slug>.md"]}
   ]
 }
 ```
@@ -113,6 +116,19 @@ targets `wiki/fragment/*`.
   appends to `wiki/log.md`.
 - Host regenerates `wiki/index.md` separately (next phase) — do not include
   index entries in `writes`.
+
+## Ticket → page mapping
+
+Fragment filenames carry the source issue number, e.g.
+`wiki/fragment/2026-04-26-issue353-foo.md` → issue #353. For every
+fragment you absorb or synthesise into a wiki page, record the
+issue→pages mapping under `pages_per_ticket`. The host uses this to
+render absolute "Wiki:" links into the inbox-summary comment so Nila
+can jump from the ticket directly to the resulting page.
+
+If a single ticket's fragments produced multiple pages, list all of
+them. If multiple tickets contributed to one page, list that page
+under each.
 
 ## Limits
 
