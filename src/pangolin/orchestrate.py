@@ -2232,6 +2232,15 @@ class CycleRunner:
 
     def _phase_summary(self) -> None:
         log("=== SUMMARY ===")
+        # A: no PR means no real cycle work happened. The summary used to
+        # fire anyway and the LLM, given a huge INBOX payload (full ticket
+        # bodies + comments) and a near-empty CHANGED list, would
+        # hallucinate by paraphrasing inbox topics as if the cycle had
+        # produced them ("Expanded 'getting-fried' essay series..." when
+        # the cycle PR was just wiki/index.md drift).
+        if not self.pr_url:
+            log("  no PR → skipping summary")
+            return
         mode = self.modes["summary"]
         inbox = gh(
             "issue", "list", "--state", "open", "--label", "inbox", "--limit", "50",
@@ -2246,14 +2255,37 @@ class CycleRunner:
             "issue", "list", "--state", "open", "--limit", "100",
             "--json", "number,title,body,labels,createdAt,author", check=False,
         )
-        changed = subprocess.run(
+        # Pass full diff stat (file + line counts) rather than just file
+        # names — gives the agent concrete numeric evidence of what
+        # actually changed, making "describe the inbox content instead"
+        # harder. Fall back to --name-only on stat failure.
+        changed_names = subprocess.run(
             ["git", "diff", "--name-only", "HEAD~1..HEAD"],
             cwd=str(REPO), capture_output=True, text=True,
         ).stdout
+        changed_stat = subprocess.run(
+            ["git", "diff", "--stat", "HEAD~1..HEAD"],
+            cwd=str(REPO), capture_output=True, text=True,
+        ).stdout
+        # B: trivial-only changes (index/log churn from older cycles, or
+        # watermark-only updates) are also a no-op signal. Skip rather
+        # than risk the same hallucination class.
+        TRIVIAL = {
+            "wiki/index.md", "wiki/log.md", ".ingest-watermark",
+        }
+        non_trivial = [
+            p for p in changed_names.splitlines()
+            if p.strip() and p.strip() not in TRIVIAL
+        ]
+        if not non_trivial:
+            log("  only trivial changes → skipping summary")
+            return
         ssot = resolve_config("docs/inbox-summary.md").read_text()
         user_prompt = (
             f"--- INBOX ---\n{inbox}\n\n--- SPAWNED ---\n{spawned}\n\n"
-            f"--- CHANGED ---\n{changed}\n\n--- PR ---\n{self.pr_url or 'none'}\n\n"
+            f"--- CHANGED (names) ---\n{changed_names}\n\n"
+            f"--- CHANGED (stat) ---\n{changed_stat}\n\n"
+            f"--- PR ---\n{self.pr_url or 'none'}\n\n"
             f"--- TASK ---\nProduce summary comments."
         )
         result = run_direct(
