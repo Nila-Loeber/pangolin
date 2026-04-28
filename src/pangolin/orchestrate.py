@@ -315,6 +315,27 @@ def close_processed(issues: list[int], summary: str):
         log(f"  closed #{n} (will auto-reopen if you comment)")
 
 
+_PARENT_INBOX_RE = re.compile(r"From inbox:\s*#(\d+)")
+
+
+def _extract_parent_inbox(body: str) -> int | None:
+    """Mode-tickets are spawned with a `From inbox: #N` line in their body
+    (see docs/inbox-triage.md). That linkage is the only path back to the
+    parent inbox thread once the mode-ticket is closed."""
+    m = _PARENT_INBOX_RE.search(body or "")
+    return int(m.group(1)) if m else None
+
+
+def _fetch_issue_meta(n: int) -> dict:
+    raw = gh("issue", "view", str(n), "--json", "title,body", check=False)
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+
+
 # ── Precheck ──
 
 def precheck() -> bool:
@@ -2233,15 +2254,62 @@ class CycleRunner:
     # short summary that links to the PR. Owner re-opens by commenting.
 
     def _phase_close_processed(self) -> None:
+        # parent_inbox -> list of {mode, number, title, pages}
+        parent_groups: dict[int, list[dict]] = {}
         for mode_name, issues in self.processed_per_mode.items():
             if not issues:
                 continue
+            for n in issues:
+                meta = _fetch_issue_meta(n)
+                parent = _extract_parent_inbox(meta.get("body", ""))
+                if parent:
+                    parent_groups.setdefault(parent, []).append({
+                        "mode": mode_name,
+                        "number": n,
+                        "title": meta.get("title", ""),
+                        "pages": list(self.pages_per_ticket.get(n, [])),
+                    })
             summary = (
                 f"Processed in cycle `{self.ts}`."
                 + (f" PR: {self.pr_url}" if self.pr_url else "")
                 + "\n\nClosing this ticket. Comment here to re-open in the next cycle."
             )
             close_processed(issues, summary)
+        if parent_groups:
+            self._backreport_to_inbox(parent_groups)
+
+    def _backreport_to_inbox(self, parent_groups: dict[int, list[dict]]) -> None:
+        """Mirror each closed mode-ticket's outcome back into its parent
+        inbox thread. Without this, the inbox thread is the only place the
+        owner reads (mobile workflow), but it never learns what the cycle
+        actually delivered for any given inbox comment — only that *some*
+        sub-ticket was spawned. Page links come from `pages_per_ticket`
+        (host-side, authoritative); PR link is the cycle's PR."""
+        repo = (gh(
+            "repo", "view", "--json", "nameWithOwner",
+            "-q", ".nameWithOwner", check=False,
+        ) or "").strip()
+        for inbox_n, entries in parent_groups.items():
+            lines = []
+            for e in entries:
+                title = e.get("title") or ""
+                lines.append(
+                    f"- **{e['mode']}** #{e['number']}"
+                    + (f": {title}" if title else "")
+                )
+                for p in e.get("pages") or []:
+                    if repo:
+                        lines.append(f"  - https://github.com/{repo}/blob/main/{p}")
+                    else:
+                        lines.append(f"  - {p}")
+            body = "→ Resultate aus diesem Cycle:\n\n" + "\n".join(lines)
+            if self.pr_url:
+                body += f"\n\nPR: {self.pr_url}"
+            gh(
+                "issue", "comment", str(inbox_n),
+                "--body", wrap_agent_body(body), check=False,
+            )
+            log(f"  back-reported to inbox #{inbox_n}: {len(entries)} ticket(s)")
 
     # ── SUMMARY ──
 
