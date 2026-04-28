@@ -139,6 +139,8 @@ pangolin harden-egress         # start proxy + export HTTPS_PROXY only. Split
 pangolin version               # print installed version
 ```
 
+User-visible changes per release are tracked in [CHANGELOG.md](CHANGELOG.md).
+
 ## Known limitations (alpha)
 
 - **Software-mode timeout is 480s.** Larger tool-use loops still won't
