@@ -697,6 +697,77 @@ class TestResearchDocSplit:
         assert "research-summarise-agent.md" in src
 
 
+class TestResearchConfabulationHardStop:
+    """PR #433 regression: research-summarise hard-rejects findings whose
+    source/summary admit the content came from training data or couldn't
+    be verified. Without this, the agent's own self-disclosure ("Training-
+    data synthesis ... all URLs unverified") sailed through the schema
+    validator and a wiki page of plausible-but-fabricated facts shipped.
+    Hard-stop at fragment-write time keeps the issue open so the next
+    cycle retries instead of accumulating confabulation."""
+
+    def _good(self):
+        return {
+            "title": "Real finding",
+            "source": "https://example.org/page",
+            "summary": "Concrete claim with a date.",
+            "date": "2026-01-15",
+            "why_relevant": "Direct quote answers the question.",
+        }
+
+    def test_legit_finding_is_written(self, tmp_path, monkeypatch):
+        from pangolin import orchestrate as O
+        monkeypatch.setattr(O, "REPO", tmp_path)
+        rel = O._write_research_fragment(42, self._good())
+        assert rel and rel.startswith("wiki/fragment/")
+        assert (tmp_path / rel).exists()
+
+    @pytest.mark.parametrize(
+        "field,value",
+        [
+            ("source", "Training-data synthesis covering verdi.de — all URLs unverified"),
+            ("source", "Trainings-Daten ohne Live-Zugriff"),
+            ("source", "Proxy block prevented WebFetch; relying on memory."),
+            ("summary", "This summary could not be verified due to network restrictions."),
+            ("summary", "Source could not verify the publication date."),
+            ("source", "Synthesised from training data; requires manual confirmation."),
+            ("summary", "No live access to the underlying document."),
+        ],
+    )
+    def test_confabulation_marker_blocks_fragment(self, tmp_path, monkeypatch, field, value):
+        from pangolin import orchestrate as O
+        monkeypatch.setattr(O, "REPO", tmp_path)
+        finding = self._good()
+        finding[field] = value
+        rel = O._write_research_fragment(42, finding)
+        assert rel is None, f"marker in {field}={value!r} should reject"
+        # No fragment file should exist either.
+        fragdir = tmp_path / "wiki" / "fragment"
+        assert not fragdir.exists() or list(fragdir.glob("*.md")) == []
+
+    def test_marker_match_is_case_insensitive(self, tmp_path, monkeypatch):
+        from pangolin import orchestrate as O
+        monkeypatch.setattr(O, "REPO", tmp_path)
+        finding = self._good()
+        finding["source"] = "TRAINING DATA SYNTHESIS — UNVERIFIED"
+        assert O._write_research_fragment(42, finding) is None
+
+    def test_inference_filter_drops_issue_when_all_findings_rejected(self, tmp_path, monkeypatch):
+        """End-to-end shape: confabulated finding produces no fragment, and
+        the inference filter then drops the claimed issue so it stays open."""
+        from pangolin import orchestrate as O
+        monkeypatch.setattr(O, "REPO", tmp_path)
+        (tmp_path / "wiki" / "fragment").mkdir(parents=True)
+        bad = self._good()
+        bad["source"] = "Training-data synthesis"
+        rel = O._write_research_fragment(99, bad)
+        assert rel is None
+        # Even if upstream optimistically appended issue 99 to all_processed,
+        # the inference filter must drop it (no backing fragment).
+        kept = O._research_inference_filter([99])
+        assert kept == []
+
+
 class TestSelfImproveValidatorWired:
     """D3 regression: _phase_self_improve must invoke the validator post-write,
     matching the claim in docs/self-improve.md (second barrier)."""

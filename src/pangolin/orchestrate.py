@@ -878,6 +878,28 @@ def _slugify(s: str, maxlen: int = 40) -> str:
     return s[:maxlen] or "untitled"
 
 
+# Confabulation markers in source/summary — phrases an agent uses when it
+# fell back to training-data prose because phase-1 search produced nothing.
+# Real findings cite real URLs without disclaimers; these strings only show
+# up when the agent is admitting it made the content up. Reject hard so the
+# fragment never lands and the issue stays in the inbox for retry.
+_RESEARCH_CONFABULATION_MARKERS = (
+    "training-data",
+    "training data",
+    "trainings-daten",
+    "trainingsdaten",
+    "unverified",
+    "unverifiziert",
+    "proxy block",
+    "proxy blocked",
+    "could not verify",
+    "could not be verified",
+    "konnte nicht verifiziert",
+    "requires manual confirmation",
+    "no live access",
+)
+
+
 def _write_research_fragment(issue_n: int, finding: dict) -> str | None:
     """Template one research finding into a wiki/fragment/*.md file.
 
@@ -897,6 +919,18 @@ def _write_research_fragment(issue_n: int, finding: dict) -> str | None:
     source = _san(finding["source"])
     summary = _san(finding["summary"])
     why = _san(finding.get("why_relevant", "(not specified)"))
+    # Confabulation hard-stop. If the agent admits in source/summary that the
+    # content came from training data or couldn't be verified, drop the
+    # finding entirely. The inference filter then keeps the issue open so a
+    # later cycle (with the egress bug fixed) can retry. See PR #433 incident.
+    combined = f"{source} {summary}".lower()
+    for marker in _RESEARCH_CONFABULATION_MARKERS:
+        if marker in combined:
+            log(
+                f"  research: REJECTED finding for #{issue_n} — "
+                f"confabulation marker {marker!r} in source/summary"
+            )
+            return None
     # Filename uses today's date so fragments sort by capture order. The
     # frontmatter `date:` field below uses the agent-provided source date.
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
