@@ -768,6 +768,129 @@ class TestResearchConfabulationHardStop:
         assert kept == []
 
 
+class TestResearchToolUseGate:
+    """PR #433 root-cause guard: research-search phase 1 must actually call
+    the web. The CLI envelope's usage.server_tool_use counts (web_search +
+    web_fetch) are the only ground truth that the agent reached out — text
+    output alone is not. If both are zero we're getting training-data prose
+    dressed as research; drop it so the issue stays open."""
+
+    def test_server_tool_use_count_sums_search_and_fetch(self):
+        from pangolin.orchestrate import _server_tool_use_count
+        assert _server_tool_use_count({}) == 0
+        assert _server_tool_use_count({"usage": {}}) == 0
+        assert _server_tool_use_count({"usage": {"server_tool_use": {}}}) == 0
+        assert _server_tool_use_count({
+            "usage": {"server_tool_use": {
+                "web_search_requests": 3, "web_fetch_requests": 0,
+            }},
+        }) == 3
+        assert _server_tool_use_count({
+            "usage": {"server_tool_use": {
+                "web_search_requests": 2, "web_fetch_requests": 5,
+            }},
+        }) == 7
+        # Tolerate None values from a slimmed envelope.
+        assert _server_tool_use_count({
+            "usage": {"server_tool_use": {
+                "web_search_requests": None, "web_fetch_requests": None,
+            }},
+        }) == 0
+
+    def _stub_envelope(self, monkeypatch, envelope_dict):
+        """Patch subprocess.run + proxy state so we can drive
+        spawn_agent_container_direct end-to-end with a fake CLI envelope."""
+        import json as _json
+        from pangolin import orchestrate as O
+
+        class FakeResult:
+            returncode = 0
+            stdout = _json.dumps(envelope_dict)
+            stderr = ""
+
+        monkeypatch.setattr(O, "_ensure_proxy_running", lambda: None)
+        monkeypatch.setattr(O, "_PROXY_IP", "127.0.0.1")
+        monkeypatch.setattr(O.subprocess, "run", lambda *a, **k: FakeResult())
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "test-placeholder")
+        return O
+
+    def test_gate_drops_when_no_server_tool_calls(self, monkeypatch):
+        envelope = {
+            "result": "Plausible-but-fabricated prose with bogus URLs.",
+            "is_error": False,
+            "usage": {"server_tool_use": {
+                "web_search_requests": 0, "web_fetch_requests": 0,
+            }},
+        }
+        O = self._stub_envelope(monkeypatch, envelope)
+        out = O.spawn_agent_container_direct(
+            system_prompt="s", user_prompt="u", model="m",
+            allowed_tools="WebSearch WebFetch", raw_text=True,
+            min_server_tool_calls=1,
+        )
+        assert out == ""
+
+    def test_gate_passes_when_search_was_called(self, monkeypatch):
+        envelope = {
+            "result": "Real findings with verified URLs.",
+            "is_error": False,
+            "usage": {"server_tool_use": {
+                "web_search_requests": 2, "web_fetch_requests": 0,
+            }},
+        }
+        O = self._stub_envelope(monkeypatch, envelope)
+        out = O.spawn_agent_container_direct(
+            system_prompt="s", user_prompt="u", model="m",
+            allowed_tools="WebSearch WebFetch", raw_text=True,
+            min_server_tool_calls=1,
+        )
+        assert out == "Real findings with verified URLs."
+
+    def test_gate_inactive_by_default(self, monkeypatch):
+        """Without min_server_tool_calls, no gating — preserves existing
+        behaviour for callers that don't care (summarise phase, etc.)."""
+        envelope = {
+            "result": "summarised content",
+            "is_error": False,
+            "usage": {"server_tool_use": {
+                "web_search_requests": 0, "web_fetch_requests": 0,
+            }},
+        }
+        O = self._stub_envelope(monkeypatch, envelope)
+        out = O.spawn_agent_container_direct(
+            system_prompt="s", user_prompt="u", model="m", raw_text=True,
+        )
+        assert out == "summarised content"
+
+    def test_is_error_drops_result(self, monkeypatch):
+        """CLI is_error=true means the API call failed — `result` then
+        contains an error string. Letting it through would feed the error
+        into phase 2 as if it were upstream data."""
+        envelope = {
+            "result": "Invalid bearer token",
+            "is_error": True,
+            "usage": {"server_tool_use": {
+                "web_search_requests": 0, "web_fetch_requests": 0,
+            }},
+        }
+        O = self._stub_envelope(monkeypatch, envelope)
+        out = O.spawn_agent_container_direct(
+            system_prompt="s", user_prompt="u", model="m", raw_text=True,
+        )
+        assert out == ""
+
+    def test_phase_research_calls_search_with_min_tool_calls(self):
+        """The wiring: _phase_research's search call passes
+        min_server_tool_calls=1. Without this the gate is dormant."""
+        src = (REPO / "src/pangolin/orchestrate.py").read_text()
+        import re
+        m = re.search(r"def _phase_research.*?(?=\n    def |\nclass |\Z)", src, re.DOTALL)
+        assert m, "could not find _phase_research"
+        body = m.group(0)
+        assert "min_server_tool_calls=1" in body, \
+            "research-search phase must require ≥1 web_search/web_fetch call"
+
+
 class TestSelfImproveValidatorWired:
     """D3 regression: _phase_self_improve must invoke the validator post-write,
     matching the claim in docs/self-improve.md (second barrier)."""
