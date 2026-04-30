@@ -672,6 +672,19 @@ def _redact_token(cmd: list[str]) -> list[str]:
     return out
 
 
+def _server_tool_use_count(envelope: dict) -> int:
+    """Sum of web_search + web_fetch invocations from CLI envelope.usage.
+
+    The Claude CLI surfaces server-side tool use under
+    `usage.server_tool_use.{web_search_requests, web_fetch_requests}`.
+    Both > 0 means the agent actually reached out — vs `0` which means it
+    answered from training data (or the proxy blocked the server-tool
+    request body — see PR #433 incident: empty SERVER_TOOL_ALLOWLIST in
+    pangolin_egress.py blocks `web_search_20250305` etc.)."""
+    sut = envelope.get("usage", {}).get("server_tool_use", {}) or {}
+    return (sut.get("web_search_requests") or 0) + (sut.get("web_fetch_requests") or 0)
+
+
 def spawn_agent_container_direct(
     system_prompt: str,
     user_prompt: str,
@@ -681,6 +694,7 @@ def spawn_agent_container_direct(
     egress_tier: str = "tight",
     raw_text: bool = False,
     timeout: int = 120,
+    min_server_tool_calls: int = 0,
 ) -> dict | str:
     """Run one direct (no-tool, json-output) agent call in a gVisor container.
 
@@ -692,6 +706,11 @@ def spawn_agent_container_direct(
 
     `egress_tier`: "tight" (Anthropic+GH allowlist, default) or "loose" (any
     HTTPS — only research-search-WebFetch needs this).
+
+    `min_server_tool_calls`: if >0, drop the result when the CLI envelope
+    reports fewer web_search + web_fetch invocations. Used by the
+    research-search phase to refuse training-data confabulation: phase 1
+    must actually call out to the web, otherwise its "findings" are made up.
     """
     if not os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
         raise RuntimeError("spawn_agent_container_direct needs CLAUDE_CODE_OAUTH_TOKEN in env")
@@ -742,6 +761,18 @@ def spawn_agent_container_direct(
     except json.JSONDecodeError:
         log(f"  spawn_agent_container: CLI JSON envelope unparseable: {result.stdout[:200]}")
         return {}
+
+    # CLI flagged the API call as failed (bad token, blocked endpoint,
+    # rate-limit, etc.) — the `result` field then contains an error string,
+    # not real content. Letting that through would feed the error into the
+    # next phase as if it were upstream data; drop it instead.
+    if envelope.get("is_error"):
+        log(
+            f"  spawn_agent_container_direct: CLI is_error=true; "
+            f"result={(envelope.get('result') or '')[:200]!r}; dropping"
+        )
+        return {} if not raw_text else ""
+
     # Post-hoc security check: if we requested zero tools but the CLI
     # envelope reports tool calls, something is wrong (CLI bug or bypass).
     # Drop the result and log a security warning.
@@ -750,6 +781,23 @@ def spawn_agent_container_direct(
         log(f"  🔴 SECURITY: spawn_agent_container_direct had allowed_tools='' "
             f"but CLI reported {tool_calls} tool call(s). Dropping result.")
         return {} if not raw_text else ""
+
+    # Tool-use gate: when the caller requires the agent to actually use
+    # web tools (research-search phase), enforce it. The CLI envelope
+    # exposes server-tool counts under usage.server_tool_use; zero there
+    # while min_server_tool_calls>=1 means the agent answered from training
+    # data — typically because the proxy blocked the server-tool request
+    # body (PR #433 root cause). Drop so the issue stays open.
+    if min_server_tool_calls:
+        used = _server_tool_use_count(envelope)
+        if used < min_server_tool_calls:
+            log(
+                f"  🟡 spawn_agent_container_direct: only {used} server-tool "
+                f"call(s) (need ≥{min_server_tool_calls}). Agent answered "
+                f"from training data — likely SERVER_TOOL_ALLOWLIST is "
+                f"blocking web_search/web_fetch at the proxy. Dropping result."
+            )
+            return {} if not raw_text else ""
 
     inner = envelope.get("result", "")
 
@@ -1644,6 +1692,11 @@ class CycleRunner:
                     egress_tier="loose",  # WebFetch is client-side: needs to reach arbitrary HTTPS hosts
                     raw_text=True,  # prose output, not JSON
                     timeout=300,  # WebSearch in gVisor is slow on cold start
+                    # PR #433 incident: phase 1 is only useful if the agent
+                    # actually called out to the web. Zero web_search/web_fetch
+                    # invocations means the "search results" are training-data
+                    # prose — drop and let the issue retry next cycle.
+                    min_server_tool_calls=1,
                 )
                 if not search_results or not search_results.strip():
                     log(f"  research: search phase returned nothing for #{n}; issue stays open")
