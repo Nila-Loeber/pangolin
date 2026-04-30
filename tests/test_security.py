@@ -435,7 +435,7 @@ class TestMitmPhaseB:
         # prefix tuple specifically.)
         import re
         m = re.search(
-            r"LOOSE_PORT_TOOL_TYPE_PREFIXES.*?\)",
+            r"LOOSE_PORT_TOOL_TYPE_PREFIXES\s*:\s*tuple.*?\)",
             code, re.DOTALL,
         )
         assert m, "LOOSE_PORT_TOOL_TYPE_PREFIXES tuple not found"
@@ -977,6 +977,76 @@ class TestResearchToolUseGate:
         assert "min_server_tool_calls=1" in body, \
             "research-search phase must require ≥1 web_search/web_fetch call"
 
+    def test_envelope_summary_keeps_diagnostic_fields(self):
+        """Verbose runs need enough envelope info to root-cause why a
+        gate fired. Drop the bulky `result` field but keep error flag,
+        timing, usage (with server_tool_use), and stop_reason."""
+        from pangolin.orchestrate import _envelope_summary
+        envelope = {
+            "result": "x" * 10000,  # bulk content we want excluded
+            "is_error": False,
+            "stop_reason": "end_turn",
+            "num_turns": 4,
+            "duration_ms": 286_000,
+            "duration_api_ms": 280_000,
+            "total_cost_usd": 0.05,
+            "permission_denials": [],
+            "usage": {"server_tool_use": {
+                "web_search_requests": 0, "web_fetch_requests": 0,
+            }},
+            "session_id": "should-not-leak-large-fields-but-ok-here",
+        }
+        s = _envelope_summary(envelope)
+        # Diagnostic fields preserved.
+        for k in ("is_error", "stop_reason", "num_turns", "duration_ms",
+                  "duration_api_ms", "total_cost_usd",
+                  "permission_denials", "usage"):
+            assert k in s, f"missing diagnostic field {k!r}"
+        # server_tool_use survives nested inside usage.
+        assert s["usage"]["server_tool_use"]["web_search_requests"] == 0
+        # Bulk result excluded; preview is bounded.
+        assert "result" not in s
+        assert "result_preview" in s
+        assert len(s["result_preview"]) <= 500
+
+    def test_verbose_logs_envelope_after_parse(self, monkeypatch, capsys):
+        """Verbose mode must emit the envelope summary right after parse,
+        regardless of whether the result is later dropped — so any
+        downstream `dropping` log line has the diagnostic context."""
+        envelope = {
+            "result": "ok",
+            "is_error": False,
+            "stop_reason": "end_turn",
+            "num_turns": 1,
+            "usage": {"server_tool_use": {
+                "web_search_requests": 0, "web_fetch_requests": 0,
+            }},
+        }
+        O = self._stub_envelope(monkeypatch, envelope)
+        monkeypatch.setenv("PANGOLIN_VERBOSE", "1")
+        O.spawn_agent_container_direct(
+            system_prompt="s", user_prompt="u", model="m", raw_text=True,
+        )
+        captured = capsys.readouterr().out
+        assert "[verbose] direct envelope" in captured
+        assert '"num_turns": 1' in captured
+        assert '"web_search_requests": 0' in captured
+
+    def test_run_cycle_dumps_proxy_logs_when_verbose(self):
+        """The verbose post-cycle proxy log dump is the bridge between
+        'tool-use gate fired' and 'why' — without it the mitm decisions
+        die with the container at workflow end."""
+        src = (REPO / "src/pangolin/orchestrate.py").read_text()
+        import re
+        m = re.search(r"def run_cycle\b.*?(?=\ndef |\nclass |\Z)", src, re.DOTALL)
+        assert m, "could not find run_cycle"
+        body = m.group(0)
+        assert "PANGOLIN_VERBOSE" in body, "run_cycle must gate on verbose env"
+        assert "_dump_proxy_logs" in body, "run_cycle must call _dump_proxy_logs"
+        # The dump itself uses `docker logs` against the proxy container.
+        assert "_dump_proxy_logs" in src
+        assert "docker" in src and '"logs"' in src
+
 
 class TestSelfImproveValidatorWired:
     """D3 regression: _phase_self_improve must invoke the validator post-write,
@@ -1124,3 +1194,205 @@ class TestTriagePathsNoInboxWatermark:
         triage = load_modes()["triage"]
         assert ".inbox-watermark" not in triage.readable_paths
         assert ".inbox-watermark" not in triage.writable_paths
+
+
+# CLI tool name → API server-side tool `type` prefix the CLI translates it
+# into. Used by the cross-policy-coherence tests below: any time a
+# spawn_agent_container_direct call lists one of these CLI names in
+# allowed_tools, the proxy MUST permit the corresponding type prefix on
+# that call's egress tier (otherwise the API rejects the request body
+# and the agent silently confabulates — the PR #433 incident).
+CLI_NAME_TO_API_TYPE_PREFIX: dict[str, str] = {
+    "WebSearch": "web_search_",
+    "WebFetch": "web_fetch_",
+}
+
+
+class TestSecurityPolicyCoherence:
+    """RCA from PR #433: pangolin's test suite verified each individual
+    security policy ('tight egress blocks server-tools', 'research mode has
+    no Read tool') but never asserted *coherence* between policies. The
+    proxy's empty SERVER_TOOL_ALLOWLIST and orchestrate.py's
+    `allowed_tools='WebSearch WebFetch'` were each individually correct;
+    their composition was broken — and no test connected the two.
+
+    These tests pair every security gate with a coherence check: 'when
+    policy X fires, do all the legitimate use sites that depend on it
+    still work?' Catches the class of bug where two correct-in-isolation
+    policies drift apart over time."""
+
+    def _spawn_calls(self) -> list:
+        """All `spawn_agent_container_direct(...)` Call nodes in
+        orchestrate.py, with kwargs flattened to a {name: ast.expr} dict.
+
+        Returns list of (kwargs_dict, source_line) tuples — only the
+        kwargs that resolve to literal values are flattened; variable
+        references stay as AST nodes for the test to opt into."""
+        import ast
+        src = (REPO / "src/pangolin/orchestrate.py").read_text()
+        tree = ast.parse(src)
+        out = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            f = node.func
+            name = (
+                f.id if isinstance(f, ast.Name) else
+                f.attr if isinstance(f, ast.Attribute) else None
+            )
+            if name != "spawn_agent_container_direct":
+                continue
+            kwargs = {}
+            for kw in node.keywords:
+                if kw.arg is None:  # **kwargs splat — skip
+                    continue
+                if isinstance(kw.value, ast.Constant):
+                    kwargs[kw.arg] = kw.value.value
+                else:
+                    kwargs[kw.arg] = kw.value  # AST node, caller decides
+            out.append((kwargs, node.lineno))
+        return out
+
+    def test_at_least_one_spawn_call_present(self):
+        """Sanity: the AST scan finds something. If orchestrate.py is ever
+        refactored to remove all direct calls (everything wrapped via a
+        helper), the test class above is dormant — fail loudly so the
+        coherence checks get re-pointed at the new helper."""
+        calls = self._spawn_calls()
+        assert calls, (
+            "no spawn_agent_container_direct(...) calls found in "
+            "orchestrate.py — coherence checks below are no-ops"
+        )
+
+    def test_web_tool_calls_use_loose_egress(self):
+        """If a spawn_agent_container_direct call includes WebSearch or
+        WebFetch in its allowed_tools string, it MUST set egress_tier='loose'.
+        The tight tier rejects every server-side `type` field, so a tight
+        + WebSearch/WebFetch combination silently fails (the API request
+        is 403'd, the agent falls back to training data). This was the
+        PR #433 root cause."""
+        for kwargs, lineno in self._spawn_calls():
+            allowed = kwargs.get("allowed_tools")
+            if not isinstance(allowed, str):
+                continue  # variable-resolved or absent
+            uses_web = any(
+                cli in allowed for cli in CLI_NAME_TO_API_TYPE_PREFIX
+            )
+            if not uses_web:
+                continue
+            tier = kwargs.get("egress_tier", "tight")
+            assert tier == "loose", (
+                f"orchestrate.py:{lineno} — spawn_agent_container_direct "
+                f"with allowed_tools={allowed!r} must set "
+                f"egress_tier='loose' (got {tier!r}); the tight tier "
+                f"blocks WebSearch/WebFetch's server-side API tools"
+            )
+
+    def test_web_tool_calls_require_min_server_tool_calls(self):
+        """Same calls must also pass min_server_tool_calls>=1. Prevents
+        the silent 'agent answered from training data' regression even if
+        the proxy is reconfigured (or a future Anthropic-side change makes
+        the tools fire intermittently). Belt + suspenders for PR #433."""
+        for kwargs, lineno in self._spawn_calls():
+            allowed = kwargs.get("allowed_tools")
+            if not isinstance(allowed, str):
+                continue
+            uses_web = any(
+                cli in allowed for cli in CLI_NAME_TO_API_TYPE_PREFIX
+            )
+            if not uses_web:
+                continue
+            mstc = kwargs.get("min_server_tool_calls", 0)
+            assert isinstance(mstc, int) and mstc >= 1, (
+                f"orchestrate.py:{lineno} — spawn_agent_container_direct "
+                f"with allowed_tools={allowed!r} must require "
+                f"min_server_tool_calls>=1 (got {mstc!r}); otherwise a "
+                f"zero-tool-call response confabulates undetected"
+            )
+
+    def test_proxy_allows_every_server_tool_we_invoke(self):
+        """Cross-file contract: every CLI tool name passed to
+        spawn_agent_container_direct that maps to a server-side API type
+        must have its `type` prefix in the proxy's
+        LOOSE_PORT_TOOL_TYPE_PREFIXES (since web tools require loose
+        egress per the test above).
+
+        Fails loudly if a future PR adds a new CLI server-tool to a
+        spawn call without updating the proxy allowlist (or, conversely,
+        if the proxy allowlist is tightened in a way that breaks an
+        active call site)."""
+        proxy_src = (REPO / "src/pangolin/pangolin_egress.py").read_text()
+        invoked: set[str] = set()
+        for kwargs, _ in self._spawn_calls():
+            allowed = kwargs.get("allowed_tools")
+            if not isinstance(allowed, str):
+                continue
+            for cli_name, api_prefix in CLI_NAME_TO_API_TYPE_PREFIX.items():
+                if cli_name in allowed:
+                    invoked.add(api_prefix)
+        assert invoked, (
+            "no WebSearch/WebFetch invocations found via "
+            "spawn_agent_container_direct — the test below is a no-op. "
+            "If web-tool use moved elsewhere (e.g. _run_search_phase "
+            "in-process path), point this scan there too."
+        )
+        for prefix in invoked:
+            # Match against the LOOSE_PORT_TOOL_TYPE_PREFIXES tuple body
+            # specifically, not just the file at large (a comment or
+            # docstring mentioning the prefix shouldn't satisfy the test).
+            import re
+            m = re.search(
+                r"LOOSE_PORT_TOOL_TYPE_PREFIXES\s*:\s*tuple.*?\)",
+                proxy_src, re.DOTALL,
+            )
+            assert m, (
+                "LOOSE_PORT_TOOL_TYPE_PREFIXES tuple declaration not found "
+                "in pangolin_egress.py — refactored?"
+            )
+            assert f'"{prefix}"' in m.group(0) or f"'{prefix}'" in m.group(0), (
+                f"orchestrate.py invokes the CLI tool that maps to "
+                f"API type prefix {prefix!r}, but the proxy's "
+                f"LOOSE_PORT_TOOL_TYPE_PREFIXES doesn't list it. "
+                f"Either add it to the proxy allowlist or remove the "
+                f"corresponding CLI tool from the spawn call."
+            )
+
+    # Specific bad phrasings — the wording matters because the bad
+    # claim is subtly different from accurate descriptions of
+    # client-side TOOLS the CLI does have (Read, Bash, etc.).
+    _WRONG_WEB_TOOL_CLAIMS = (
+        "client-side websearch",
+        "client-side webfetch",
+        "client-side web_search",
+        "client-side web_fetch",
+        "websearch is client-side",
+        "webfetch is client-side",
+    )
+
+    def _assert_no_wrong_claim(self, path: Path, label: str) -> None:
+        body = path.read_text().lower()
+        for phrase in self._WRONG_WEB_TOOL_CLAIMS:
+            assert phrase not in body, (
+                f"{label} must not claim {phrase!r} — WebSearch and "
+                f"WebFetch are Anthropic server-side tools, verified in "
+                f"API docs and the CLI's usage.server_tool_use envelope"
+            )
+
+    def test_claude_md_does_not_claim_web_tools_are_client_side(self):
+        """Doc anti-rot: CLAUDE.md once claimed 'research phase 1 uses
+        the CLI's client-side WebSearch/WebFetch, not the API's', which
+        was wrong and seeded the PR #433 incident (the proxy was
+        configured around that mistaken assumption). Guard against the
+        wrong claim coming back during a future doc rewrite."""
+        self._assert_no_wrong_claim(REPO / "CLAUDE.md", "CLAUDE.md")
+
+    def test_search_agent_prompt_does_not_claim_web_tools_are_client_side(self):
+        """Same anti-rot but for the SSoT prompt the search agent reads.
+        Post-PR #31 follow-up: this file *also* had the wrong claim and
+        survived the original CLAUDE.md fix. The agent's own instructions
+        described its tools incorrectly — exactly the kind of doc drift
+        the policy-coherence class is supposed to catch."""
+        self._assert_no_wrong_claim(
+            REPO / "src/pangolin/default_config/docs/research-search-agent.md",
+            "research-search-agent.md SSoT",
+        )

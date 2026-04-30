@@ -685,6 +685,30 @@ def _server_tool_use_count(envelope: dict) -> int:
     return (sut.get("web_search_requests") or 0) + (sut.get("web_fetch_requests") or 0)
 
 
+def _envelope_summary(envelope: dict) -> dict:
+    """Compact diagnostic view of a CLI envelope, suitable for verbose logs.
+
+    Drops the bulky `result` field (which can be tens of kilobytes of
+    prose) and keeps the fields useful for root-causing why a call
+    behaved the way it did: error flag, stop reason, turn/timing counts,
+    cost, permission denials, full usage block (including
+    server_tool_use), and a short result preview. PR #433 follow-up: a
+    verbose run that drops on `min_server_tool_calls` should make it
+    obvious from the envelope whether the API answered without tool use,
+    the CLI hit a permission denial, or the agent hit max_iterations."""
+    return {
+        "is_error": envelope.get("is_error"),
+        "stop_reason": envelope.get("stop_reason"),
+        "num_turns": envelope.get("num_turns"),
+        "duration_ms": envelope.get("duration_ms"),
+        "duration_api_ms": envelope.get("duration_api_ms"),
+        "total_cost_usd": envelope.get("total_cost_usd"),
+        "permission_denials": envelope.get("permission_denials"),
+        "usage": envelope.get("usage"),
+        "result_preview": (envelope.get("result") or "")[:500],
+    }
+
+
 def spawn_agent_container_direct(
     system_prompt: str,
     user_prompt: str,
@@ -759,8 +783,18 @@ def spawn_agent_container_direct(
     try:
         envelope = json.loads(result.stdout)
     except json.JSONDecodeError:
+        if verbose:
+            # Without this dump we have no way to debug a CLI that
+            # produced something neither valid JSON nor an obvious error.
+            log(f"  [verbose] direct stdout (raw, unparseable): {result.stdout}")
         log(f"  spawn_agent_container: CLI JSON envelope unparseable: {result.stdout[:200]}")
         return {}
+
+    # Verbose: emit the envelope summary unconditionally so every drop-
+    # reason below has enough context in the log to diagnose. This is the
+    # diagnostic that PR #433's post-mortem found missing.
+    if verbose:
+        log(f"  [verbose] direct envelope: {json.dumps(_envelope_summary(envelope), default=str)}")
 
     # CLI flagged the API call as failed (bad token, blocked endpoint,
     # rate-limit, etc.) — the `result` field then contains an error string,
@@ -2456,6 +2490,28 @@ def run_cycle() -> None:
     from pangolin import pr_feedback, software
     pr_feedback.run()
     software.run()
+    # Verbose-only: dump the egress proxy's mitm decisions (BLOCK / PASS /
+    # endpoint-deny / body-inspection verdicts) so they survive past the
+    # container's lifetime. Without this, post-mortems on "why did the
+    # tool-use gate fire?" hit a wall at the proxy boundary.
+    if os.environ.get("PANGOLIN_VERBOSE") == "1":
+        _dump_proxy_logs()
+
+
+def _dump_proxy_logs(tail: int = 1000) -> None:
+    try:
+        r = subprocess.run(
+            ["docker", "logs", "--tail", str(tail), PROXY_NAME],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        log(f"proxy log dump failed: {e!r}")
+        return
+    # mitmproxy writes its access log to stderr; stdout is usually empty.
+    # Concatenate both so callers get the full picture in one block.
+    blob = (r.stdout or "") + (r.stderr or "")
+    if blob:
+        log(f"=== PROXY LOGS (tail {tail}) ===\n{blob}\n=== END PROXY LOGS ===")
 
 
 # ── Egress hardening (runs as workflow step, before `pangolin run`) ──
