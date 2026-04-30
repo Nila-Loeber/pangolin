@@ -66,13 +66,32 @@ TIGHT_ALLOWLIST: set[str] = {
 ANTHROPIC_HOST = "api.anthropic.com"
 ANTHROPIC_TOKEN = os.environ.get("ANTHROPIC_TOKEN", "")
 
-# Server-side tool `type` values the policy permits. Empty today — every
-# pangolin mode uses either custom tools (which have name/description/
-# input_schema, no `type` discriminator) or client-side CLI tools
-# (handled by the claude CLI process, not via the API). Add specific
-# `type` strings here if a future mode legitimately needs an Anthropic
-# server-side tool.
+# Server-side tool `type` values permitted on *any* port. Empty by design:
+# the tight tier (3128) carries summarise-phase + every other mode whose
+# input could be untrusted, so we keep its server-tool surface zero.
+# Loose-tier exceptions live in LOOSE_PORT_TOOL_TYPE_PREFIXES below.
 SERVER_TOOL_ALLOWLIST: set[str] = set()
+
+# Server-side tool `type` *prefixes* permitted only on the loose port
+# (3129). Loose port = research-search phase 1: input is the owner-
+# authored issue body (trusted), the agent has no Read tool, no Bash, and
+# the OAuth token never enters its container (Phase A). The exfil surface
+# left over is "leak the issue body / system prompt to an attacker-chosen
+# URL via Anthropic's web_fetch" — possible but low-stakes given the
+# trust topology, and required for research to actually function.
+#
+# The block stays in force on the tight port: summarise phase processes
+# untrusted web content as DATA, so it must not be able to call out.
+#
+# Prefix-match (rather than exact strings) so the allowlist tracks
+# Anthropic's date-versioned tool names (web_search_20250305 →
+# web_search_20260209 → ...) without needing a code change every rev.
+# Restricting to these two families specifically keeps `code_execution_*`
+# and any future server-tool family default-denied.
+LOOSE_PORT_TOOL_TYPE_PREFIXES: tuple[str, ...] = (
+    "web_search_",
+    "web_fetch_",
+)
 
 # Endpoints permitted on api.anthropic.com. Default-deny: any
 # (method, path) combination not in this set gets a 403 *before* we
@@ -201,9 +220,15 @@ class PangolinEgress:
         if ANTHROPIC_TOKEN:
             flow.request.headers["Authorization"] = f"Bearer {ANTHROPIC_TOKEN}"
 
-        # Phase B body inspection for messages-family endpoints.
+        # Phase B body inspection for messages-family endpoints. Pass the
+        # local listener port so loose-port server-tool exceptions
+        # (web_search_*, web_fetch_*) can be honoured without leaking
+        # them into the tight tier.
         if _is_messages_post(method, path):
-            ok, reason = _validate_messages_body(flow.request.content or b"")
+            local_port = flow.client_conn.sockname[1]
+            ok, reason = _validate_messages_body(
+                flow.request.content or b"", local_port,
+            )
             if not ok:
                 log.warning("BLOCK %s — %s", flow.request.url, reason)
                 flow.response = _block(reason)
@@ -212,8 +237,26 @@ class PangolinEgress:
         log.info("PASS tight %s %s", method, flow.request.url)
 
 
-def _validate_messages_body(body: bytes) -> tuple[bool, str]:
-    """Reject any POST /v1/messages whose tools[] has a server-side type."""
+def _tool_type_allowed(ttype: str, local_port: int) -> bool:
+    """Single point of policy on which server-tool `type` strings pass.
+
+    Tight port: only SERVER_TOOL_ALLOWLIST (empty by default → block all).
+    Loose port: also accept LOOSE_PORT_TOOL_TYPE_PREFIXES so the research-
+    search phase's WebSearch/WebFetch (which the CLI translates to
+    Anthropic server-side tools) can reach the API."""
+    if ttype in SERVER_TOOL_ALLOWLIST:
+        return True
+    if local_port == LOOSE_PORT and any(
+        ttype.startswith(p) for p in LOOSE_PORT_TOOL_TYPE_PREFIXES
+    ):
+        return True
+    return False
+
+
+def _validate_messages_body(body: bytes, local_port: int) -> tuple[bool, str]:
+    """Reject any POST /v1/messages whose tools[] has a disallowed server-
+    side type. `local_port` selects the per-port policy (see
+    `_tool_type_allowed`)."""
     try:
         payload = json.loads(body.decode("utf-8", errors="replace"))
     except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
@@ -229,7 +272,7 @@ def _validate_messages_body(body: bytes) -> tuple[bool, str]:
         ttype = tool.get("type")
         if ttype is None:
             continue  # custom tool — has name/description/input_schema
-        if ttype in SERVER_TOOL_ALLOWLIST:
+        if _tool_type_allowed(ttype, local_port):
             continue
         return False, f"server-side tool type={ttype!r} blocked (tools[{i}])"
     return True, ""
