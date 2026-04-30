@@ -977,6 +977,76 @@ class TestResearchToolUseGate:
         assert "min_server_tool_calls=1" in body, \
             "research-search phase must require ≥1 web_search/web_fetch call"
 
+    def test_envelope_summary_keeps_diagnostic_fields(self):
+        """Verbose runs need enough envelope info to root-cause why a
+        gate fired. Drop the bulky `result` field but keep error flag,
+        timing, usage (with server_tool_use), and stop_reason."""
+        from pangolin.orchestrate import _envelope_summary
+        envelope = {
+            "result": "x" * 10000,  # bulk content we want excluded
+            "is_error": False,
+            "stop_reason": "end_turn",
+            "num_turns": 4,
+            "duration_ms": 286_000,
+            "duration_api_ms": 280_000,
+            "total_cost_usd": 0.05,
+            "permission_denials": [],
+            "usage": {"server_tool_use": {
+                "web_search_requests": 0, "web_fetch_requests": 0,
+            }},
+            "session_id": "should-not-leak-large-fields-but-ok-here",
+        }
+        s = _envelope_summary(envelope)
+        # Diagnostic fields preserved.
+        for k in ("is_error", "stop_reason", "num_turns", "duration_ms",
+                  "duration_api_ms", "total_cost_usd",
+                  "permission_denials", "usage"):
+            assert k in s, f"missing diagnostic field {k!r}"
+        # server_tool_use survives nested inside usage.
+        assert s["usage"]["server_tool_use"]["web_search_requests"] == 0
+        # Bulk result excluded; preview is bounded.
+        assert "result" not in s
+        assert "result_preview" in s
+        assert len(s["result_preview"]) <= 500
+
+    def test_verbose_logs_envelope_after_parse(self, monkeypatch, capsys):
+        """Verbose mode must emit the envelope summary right after parse,
+        regardless of whether the result is later dropped — so any
+        downstream `dropping` log line has the diagnostic context."""
+        envelope = {
+            "result": "ok",
+            "is_error": False,
+            "stop_reason": "end_turn",
+            "num_turns": 1,
+            "usage": {"server_tool_use": {
+                "web_search_requests": 0, "web_fetch_requests": 0,
+            }},
+        }
+        O = self._stub_envelope(monkeypatch, envelope)
+        monkeypatch.setenv("PANGOLIN_VERBOSE", "1")
+        O.spawn_agent_container_direct(
+            system_prompt="s", user_prompt="u", model="m", raw_text=True,
+        )
+        captured = capsys.readouterr().out
+        assert "[verbose] direct envelope" in captured
+        assert '"num_turns": 1' in captured
+        assert '"web_search_requests": 0' in captured
+
+    def test_run_cycle_dumps_proxy_logs_when_verbose(self):
+        """The verbose post-cycle proxy log dump is the bridge between
+        'tool-use gate fired' and 'why' — without it the mitm decisions
+        die with the container at workflow end."""
+        src = (REPO / "src/pangolin/orchestrate.py").read_text()
+        import re
+        m = re.search(r"def run_cycle\b.*?(?=\ndef |\nclass |\Z)", src, re.DOTALL)
+        assert m, "could not find run_cycle"
+        body = m.group(0)
+        assert "PANGOLIN_VERBOSE" in body, "run_cycle must gate on verbose env"
+        assert "_dump_proxy_logs" in body, "run_cycle must call _dump_proxy_logs"
+        # The dump itself uses `docker logs` against the proxy container.
+        assert "_dump_proxy_logs" in src
+        assert "docker" in src and '"logs"' in src
+
 
 class TestSelfImproveValidatorWired:
     """D3 regression: _phase_self_improve must invoke the validator post-write,
@@ -1287,27 +1357,42 @@ class TestSecurityPolicyCoherence:
                 f"corresponding CLI tool from the spawn call."
             )
 
+    # Specific bad phrasings — the wording matters because the bad
+    # claim is subtly different from accurate descriptions of
+    # client-side TOOLS the CLI does have (Read, Bash, etc.).
+    _WRONG_WEB_TOOL_CLAIMS = (
+        "client-side websearch",
+        "client-side webfetch",
+        "client-side web_search",
+        "client-side web_fetch",
+        "websearch is client-side",
+        "webfetch is client-side",
+    )
+
+    def _assert_no_wrong_claim(self, path: Path, label: str) -> None:
+        body = path.read_text().lower()
+        for phrase in self._WRONG_WEB_TOOL_CLAIMS:
+            assert phrase not in body, (
+                f"{label} must not claim {phrase!r} — WebSearch and "
+                f"WebFetch are Anthropic server-side tools, verified in "
+                f"API docs and the CLI's usage.server_tool_use envelope"
+            )
+
     def test_claude_md_does_not_claim_web_tools_are_client_side(self):
         """Doc anti-rot: CLAUDE.md once claimed 'research phase 1 uses
         the CLI's client-side WebSearch/WebFetch, not the API's', which
         was wrong and seeded the PR #433 incident (the proxy was
         configured around that mistaken assumption). Guard against the
         wrong claim coming back during a future doc rewrite."""
-        claude_md = (REPO / "CLAUDE.md").read_text().lower()
-        # Specific bad phrasings — the wording matters because the bad
-        # claim is subtly different from accurate descriptions of
-        # client-side TOOLS the CLI does have (Read, Bash, etc.).
-        forbidden = [
-            "client-side websearch",
-            "client-side webfetch",
-            "client-side web_search",
-            "client-side web_fetch",
-            "websearch is client-side",
-            "webfetch is client-side",
-        ]
-        for phrase in forbidden:
-            assert phrase not in claude_md, (
-                f"CLAUDE.md must not claim {phrase!r} — WebSearch and "
-                f"WebFetch are Anthropic server-side tools, verified in "
-                f"API docs and the CLI's usage.server_tool_use envelope"
-            )
+        self._assert_no_wrong_claim(REPO / "CLAUDE.md", "CLAUDE.md")
+
+    def test_search_agent_prompt_does_not_claim_web_tools_are_client_side(self):
+        """Same anti-rot but for the SSoT prompt the search agent reads.
+        Post-PR #31 follow-up: this file *also* had the wrong claim and
+        survived the original CLAUDE.md fix. The agent's own instructions
+        described its tools incorrectly — exactly the kind of doc drift
+        the policy-coherence class is supposed to catch."""
+        self._assert_no_wrong_claim(
+            REPO / "src/pangolin/default_config/docs/research-search-agent.md",
+            "research-search-agent.md SSoT",
+        )
