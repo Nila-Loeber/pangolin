@@ -168,6 +168,16 @@ shim (or leaving it on `@main`) updates every wiki atomically.
   After a package change, the canary updates on the next `workflow_dispatch`;
   no manual sync.
 
+## Bug-tracking workflow
+
+Issues in `Nila-Loeber/pangolin` are the handover mechanism between dev sessions. This repo is **public** — no consumer-specific info (repo names, issue numbers, inbox content) in issues or comments.
+
+**Label lifecycle:** `bug`/`enhancement` → `fix-ready` (fix merged, not yet deployed) → `needs-test` (deployed to consumer, awaiting verification) → close with test-report comment.
+
+**As beta-tester:** when verifying a fix, post a comment using the "Test report" issue template: pangolin version, run ID, pass/fail, regressions checked. Then close the issue.
+
+**Issue templates** live in `.github/ISSUE_TEMPLATE/`: `bug.md` and `test-report.md`.
+
 ## BACKLOG.md
 
 Canonical pre-GA list. Check it before inventing work. Current high-level items:
