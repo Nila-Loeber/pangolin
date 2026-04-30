@@ -3,6 +3,45 @@
 Pangolin uses git tags as the version source of truth (`setuptools_scm`).
 This file documents the user-visible changes per tagged release.
 
+## v0.12.1 — 2026-04-30
+
+### Added
+
+- **Verbose envelope dump.** `PANGOLIN_VERBOSE=1` now emits a compact
+  CLI-envelope summary (`is_error`, `stop_reason`, `num_turns`,
+  `duration_*`, `total_cost_usd`, `permission_denials`, full `usage`
+  including `server_tool_use`, 500-char `result_preview`) right after
+  parse in `spawn_agent_container_direct`. Drop-decisions downstream
+  (is_error, tool-use gate, etc.) now have the envelope context in
+  the same log block. Bulky `result` field excluded. Also dumps raw
+  stdout on JSON-parse failure under verbose.
+- **Post-cycle proxy log dump.** Verbose runs now `docker logs --tail
+  1000` the egress proxy at the end of `run_cycle`, so mitm
+  BLOCK/PASS/endpoint-deny verdicts survive past workflow
+  termination. Bridges the gap between "tool-use gate fired" and
+  "why the proxy decided what it did".
+- **Paired-test policy coherence.** New `TestSecurityPolicyCoherence`
+  class catches the structural drift class behind PR #433 (one
+  policy individually correct, another individually correct, the
+  composition broken). Six AST-static tests assert: every
+  `spawn_agent_container_direct` call invoking WebSearch/WebFetch
+  uses loose egress + `min_server_tool_calls>=1`; every server-tool
+  prefix we invoke is allowlisted in the proxy; CLAUDE.md and the
+  search-agent SSoT prompt do not claim WebSearch/WebFetch are
+  client-side. Drift sabotage round-trip verified.
+
+### Fixed
+
+- **Search-agent SSoT prompt.** `docs/research-search-agent.md`
+  described WebSearch/WebFetch as "client-side CLI tools, not the
+  API's server-side tool infrastructure" — wrong post-PR #31 (and
+  the same mistaken claim that seeded the original incident).
+  Replaced with an accurate description plus an explicit "must call
+  ≥1 web tool per request" instruction, so the model can't
+  hand-wave past the orchestrator's tool-use gate.
+- **CLAUDE.md leftover claim.** A second instance of the wrong
+  client-side claim survived the PR #31 fix; corrected.
+
 ## v0.12.0 — 2026-04-30
 
 ### Fixed
