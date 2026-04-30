@@ -3,6 +3,40 @@
 Pangolin uses git tags as the version source of truth (`setuptools_scm`).
 This file documents the user-visible changes per tagged release.
 
+## v0.12.3 — 2026-04-30
+
+### Fixed
+
+- **Direct-mode JSON parsing dropped findings whose strings contained
+  inner backticks.** After v0.12.2 switched
+  `spawn_agent_container_direct` to `--output-format stream-json`, the
+  `result` field is the assistant's raw final text — under the OAuth/
+  CLI path there is no Structured Outputs / constrained decoding, so
+  the model often wraps its JSON in markdown code fences. The previous
+  fence stripper used a non-greedy regex, ` ```(?:json)?\s*(.*?)\s*``` `,
+  which stopped at the *first* closing fence. When a JSON string value
+  itself contained ```` ```python ... ``` ```` (a code snippet inside a
+  research finding's body), the regex truncated the payload mid-string
+  and `json.loads` failed; the result was logged as `inner result not
+  parseable: {` and the phase silently dropped the findings.
+
+  Reproduced in the retest of issue #432 (nlkw run 25158135887): the
+  search phase passed (real ver.di URLs, six `WebSearch` calls), but
+  the summarise phase emitted markdown-wrapped JSON that the parser
+  couldn't read, so research finished with "no findings for #432".
+
+  Replaced the regex with a balanced-bracket extractor built on
+  `json.JSONDecoder.raw_decode`, which is string-escape- and
+  bracket-balance-aware. It correctly skips backticks inside JSON
+  string values, tolerates prose before/after the JSON, and handles
+  bare-JSON, fenced-JSON-with-language-tag, and fenced-JSON-no-tag
+  uniformly. Test coverage in `tests/test_security.py::TestStreamJsonGate`
+  added for: bare object, fenced object, fenced no-lang, prose prefix,
+  nested fences in string value, unparseable input, empty input.
+
+  No API-contract change for callers — `spawn_agent_container_direct`
+  still returns `dict | str`, still returns `{}` on parse failure.
+
 ## v0.12.2 — 2026-04-30
 
 ### Fixed

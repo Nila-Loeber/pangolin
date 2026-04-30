@@ -1135,6 +1135,63 @@ class TestResearchToolUseGate:
         )
         assert out == ""
 
+    def test_inner_json_bare_object(self):
+        """The happy path: model emits pure JSON, no fences."""
+        from pangolin.orchestrate import _parse_inner_json
+        assert _parse_inner_json('{"findings": [{"x": 1}]}') == {
+            "findings": [{"x": 1}]
+        }
+
+    def test_inner_json_fenced(self):
+        """Common case under OAuth/CLI path (no Structured Outputs):
+        model wraps its JSON in markdown fences."""
+        from pangolin.orchestrate import _parse_inner_json
+        text = '```json\n{"findings": [{"summary": "ok"}]}\n```'
+        assert _parse_inner_json(text) == {"findings": [{"summary": "ok"}]}
+
+    def test_inner_json_fenced_no_lang(self):
+        """Fences without `json` language tag — also seen in the wild."""
+        from pangolin.orchestrate import _parse_inner_json
+        text = '```\n{"a": 1}\n```'
+        assert _parse_inner_json(text) == {"a": 1}
+
+    def test_inner_json_with_prose_prefix(self):
+        """Model adds a sign-on before the JSON. Caller still wants
+        the parsed object."""
+        from pangolin.orchestrate import _parse_inner_json
+        text = "Here is my response:\n\n{\"key\": \"value\"}"
+        assert _parse_inner_json(text) == {"key": "value"}
+
+    def test_inner_json_with_nested_fences_in_string(self):
+        """The bug from HANDOVER-research-confabulation.md retest
+        (run 25158135887): findings whose body contains markdown code
+        fences. The previous non-greedy regex `(?:json)?\\s*(.*?)\\s*```
+        stopped at the inner fence and `json.loads` failed on the
+        truncated payload. raw_decode is string-escape-aware and
+        correctly skips inner backticks inside JSON string values."""
+        from pangolin.orchestrate import _parse_inner_json
+        text = (
+            '```json\n'
+            '{"findings": [{"body": "Use ```python\\nx=1\\n``` here."}]}\n'
+            '```'
+        )
+        out = _parse_inner_json(text)
+        assert out == {
+            "findings": [{"body": "Use ```python\nx=1\n``` here."}]
+        }
+
+    def test_inner_json_unparseable_returns_empty(self):
+        """Pure prose, no JSON anywhere → drop with `{}`. Caller (e.g.
+        _phase_research summarise) treats empty dict as 'no findings'."""
+        from pangolin.orchestrate import _parse_inner_json
+        assert _parse_inner_json("I don't have an answer.") == {}
+
+    def test_inner_json_empty_returns_empty(self):
+        """Empty result field (truncation, etc.) → empty dict."""
+        from pangolin.orchestrate import _parse_inner_json
+        assert _parse_inner_json("") == {}
+        assert _parse_inner_json("   \n\t  ") == {}
+
     def test_phase_research_calls_search_with_min_tool_calls(self):
         """The wiring: _phase_research's search call passes
         min_server_tool_calls=1. Without this the gate is dormant."""

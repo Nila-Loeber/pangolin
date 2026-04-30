@@ -753,6 +753,43 @@ def _count_tool_uses(events: list[dict], names: frozenset[str] | None = None) ->
     )
 
 
+def _parse_inner_json(text: str) -> dict:
+    """Extract a JSON object from CLI assistant text. `{}` on failure.
+
+    The CLI's `result` field is the assistant's final text (no Structured
+    Outputs over the OAuth/CLI path — the schema rides in the system
+    prompt as a hint, not as a constrained-decoding spec). The model
+    therefore may wrap its JSON in markdown fences, prepend prose, or
+    append a sign-off. Earlier regex-based fence stripping with a
+    non-greedy `(.*?)` body broke when JSON string values themselves
+    contained ```backticks``` — the regex stopped at the inner fence
+    and `json.loads` failed on the truncated payload.
+
+    `json.JSONDecoder.raw_decode` is string-escape- and bracket-balance-
+    aware, so scanning for `{` and trying raw_decode handles all of:
+    bare JSON, fenced JSON, JSON with surrounding prose, JSON with
+    nested fences in string values."""
+    s = text.strip()
+    if not s:
+        return {}
+    try:
+        obj = json.loads(s)
+        return obj if isinstance(obj, dict) else {}
+    except json.JSONDecodeError:
+        pass
+    decoder = json.JSONDecoder()
+    for i, ch in enumerate(s):
+        if ch == "{":
+            try:
+                obj, _ = decoder.raw_decode(s[i:])
+                if isinstance(obj, dict):
+                    return obj
+            except json.JSONDecodeError:
+                continue
+    log(f"  spawn_agent_container: inner result not parseable: {s[:200]}")
+    return {}
+
+
 def _envelope_summary(envelope: dict) -> dict:
     """Compact diagnostic view of a CLI envelope, suitable for verbose logs.
 
@@ -925,23 +962,7 @@ def spawn_agent_container_direct(
     if raw_text:
         return inner or ""
 
-    # Strip markdown fences if present and parse inner JSON
-    inner = inner.strip()
-    m = re.search(r"```(?:json)?\s*(.*?)\s*```", inner, re.DOTALL)
-    if m:
-        inner = m.group(1)
-    try:
-        return json.loads(inner)
-    except json.JSONDecodeError:
-        # Try greedy object extraction
-        m = re.search(r"\{.*\}", inner, re.DOTALL)
-        if m:
-            try:
-                return json.loads(m.group(0))
-            except json.JSONDecodeError:
-                pass
-        log(f"  spawn_agent_container: inner result not parseable: {inner[:200]}")
-        return {}
+    return _parse_inner_json(inner)
 
 
 def _parse_json_array_from_text(raw: str) -> list | None:
