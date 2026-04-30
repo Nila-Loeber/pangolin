@@ -3,6 +3,50 @@
 Pangolin uses git tags as the version source of truth (`setuptools_scm`).
 This file documents the user-visible changes per tagged release.
 
+## v0.12.2 — 2026-04-30
+
+### Fixed
+
+- **Search-phase tool-use gate was throwing away real work.** The
+  research-search defense added in v0.12.0 read
+  `usage.server_tool_use.{web_search_requests, web_fetch_requests}`
+  to verify the agent had reached out to the web. Empirical
+  reproduction (issue #432, run 25153091070, plus a direct repro:
+  `claude --print --allowedTools WebSearch,WebFetch ...`) showed
+  the CLI now dispatches `WebSearch`/`WebFetch` to a helper
+  `claude-haiku-4-5` model and surfaces those counts under
+  `modelUsage[<model_id>].webSearchRequests`, leaving the
+  top-level field at zero even on successful searches with real
+  URLs and full-cost runs ($1.05, 18 turns, 4.3 minutes).
+
+  Rather than chase the per-model counter location (which already
+  shifted once and might shift again), `spawn_agent_container_direct`
+  now uses `--output-format stream-json --verbose` and counts
+  `tool_use` blocks named `WebSearch`/`WebFetch` directly from the
+  CLI's emitted stream. This is the canonical Agent-SDK shape
+  (every tool call appears as a structural `tool_use` content
+  block in an `assistant`-typed event), independent of which
+  model the CLI dispatches the call to and which envelope fields
+  it uses for per-model bookkeeping. `_envelope_summary` now also
+  includes a per-tool-name breakdown so future verbose runs make
+  the actual dispatch visible directly.
+
+### Changed
+
+- `spawn_agent_container_direct` switches CLI output format from
+  `json` to `stream-json --verbose`. Return contract is unchanged
+  (still `dict | str` from the final result event). Callers that
+  read `envelope.result` (every direct mode: writing, thinking,
+  summarise, wiki-ingest, search) see the same content. Stderr
+  becomes a bit noisier under `PANGOLIN_VERBOSE=1` because the
+  CLI's own verbose logs flow through.
+
+### Removed
+
+- Internal helper `_server_tool_use_count` (replaced by
+  `_count_tool_uses` over the stream-json events). Not part of
+  the public API.
+
 ## v0.12.1 — 2026-04-30
 
 ### Added

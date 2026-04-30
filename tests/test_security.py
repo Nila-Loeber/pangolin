@@ -855,45 +855,108 @@ class TestResearchConfabulationHardStop:
         assert kept == []
 
 
+def _assistant_with_tool_uses(*tool_names: str) -> dict:
+    """Build a synthetic stream-json `assistant` event whose message
+    content carries one `tool_use` block per name. Matches the shape
+    the CLI emits in --output-format=stream-json."""
+    return {
+        "type": "assistant",
+        "message": {
+            "content": [
+                {"type": "tool_use", "name": name, "id": f"tu_{i}", "input": {}}
+                for i, name in enumerate(tool_names)
+            ],
+        },
+    }
+
+
 class TestResearchToolUseGate:
-    """PR #433 root-cause guard: research-search phase 1 must actually call
-    the web. The CLI envelope's usage.server_tool_use counts (web_search +
-    web_fetch) are the only ground truth that the agent reached out — text
-    output alone is not. If both are zero we're getting training-data prose
-    dressed as research; drop it so the issue stays open."""
+    """PR #433 root-cause guard: research-search phase 1 must actually
+    call the web. The signal is the count of `tool_use` blocks named
+    `WebSearch`/`WebFetch` in the CLI's stream-json output — a
+    structural fact that doesn't depend on which per-model bookkeeping
+    field the CLI happens to use this version. If zero, we're getting
+    training-data prose dressed as research; drop it so the issue
+    stays open."""
 
-    def test_server_tool_use_count_sums_search_and_fetch(self):
-        from pangolin.orchestrate import _server_tool_use_count
-        assert _server_tool_use_count({}) == 0
-        assert _server_tool_use_count({"usage": {}}) == 0
-        assert _server_tool_use_count({"usage": {"server_tool_use": {}}}) == 0
-        assert _server_tool_use_count({
-            "usage": {"server_tool_use": {
-                "web_search_requests": 3, "web_fetch_requests": 0,
-            }},
-        }) == 3
-        assert _server_tool_use_count({
-            "usage": {"server_tool_use": {
-                "web_search_requests": 2, "web_fetch_requests": 5,
-            }},
-        }) == 7
-        # Tolerate None values from a slimmed envelope.
-        assert _server_tool_use_count({
-            "usage": {"server_tool_use": {
-                "web_search_requests": None, "web_fetch_requests": None,
-            }},
-        }) == 0
+    def test_count_tool_uses_in_stream(self):
+        from pangolin.orchestrate import (
+            _count_tool_uses, WEB_TOOL_NAMES,
+        )
+        # Empty stream.
+        assert _count_tool_uses([], WEB_TOOL_NAMES) == 0
+        # Stream with WebSearch and WebFetch tool_uses + an unrelated
+        # tool. Filter by WEB_TOOL_NAMES → 2.
+        events = [
+            {"type": "system"},
+            _assistant_with_tool_uses("WebSearch"),
+            {"type": "user", "message": {"content": [{"type": "tool_result"}]}},
+            _assistant_with_tool_uses("WebFetch", "Read"),
+            {"type": "result", "result": "ok"},
+        ]
+        assert _count_tool_uses(events, WEB_TOOL_NAMES) == 2
+        # Filter=None counts every tool_use block regardless of name.
+        assert _count_tool_uses(events) == 3
+        # Multiple WebSearches across multiple assistant turns.
+        events = [
+            _assistant_with_tool_uses("WebSearch", "WebSearch"),
+            _assistant_with_tool_uses("WebSearch"),
+        ]
+        assert _count_tool_uses(events, WEB_TOOL_NAMES) == 3
+        # Robust against malformed events.
+        assert _count_tool_uses([
+            {"type": "assistant"},  # no message
+            {"type": "assistant", "message": "bogus"},
+            {"type": "assistant", "message": {"content": "not-a-list"}},
+            {"type": "assistant", "message": {"content": [None, "x", 1]}},
+            "not-a-dict",
+            None,
+        ], WEB_TOOL_NAMES) == 0
 
-    def _stub_envelope(self, monkeypatch, envelope_dict):
+    def test_parse_stream_json(self):
+        from pangolin.orchestrate import _parse_stream_json
+        # Newline-delimited events; tolerate blank lines and noise.
+        stdout = (
+            '{"type":"system","subtype":"init"}\n'
+            '\n'
+            'not json — ignored\n'
+            '{"type":"assistant","message":{"content":[]}}\n'
+            '{"type":"result","result":"ok"}\n'
+        )
+        events = _parse_stream_json(stdout)
+        assert [e["type"] for e in events] == ["system", "assistant", "result"]
+
+    def test_result_envelope_picks_last_result_event(self):
+        from pangolin.orchestrate import _result_envelope
+        events = [
+            {"type": "system"},
+            {"type": "assistant"},
+            {"type": "result", "result": "first"},
+            {"type": "result", "result": "second"},
+        ]
+        assert _result_envelope(events)["result"] == "second"
+        assert _result_envelope([{"type": "system"}]) is None
+        assert _result_envelope([]) is None
+
+    def _stub_stream(self, monkeypatch, *, envelope=None, events=None):
         """Patch subprocess.run + proxy state so we can drive
-        spawn_agent_container_direct end-to-end with a fake CLI envelope."""
+        spawn_agent_container_direct end-to-end with a fake CLI
+        stream-json output. Pass `events` for full control of the
+        stream; pass `envelope` for the simple case where you only
+        care about the final result event (auto-appended)."""
         import json as _json
         from pangolin import orchestrate as O
 
+        if events is None:
+            events = []
+        if envelope is not None:
+            events = list(events) + [{**envelope, "type": "result"}]
+        stdout = "\n".join(_json.dumps(e) for e in events) + "\n"
+
         class FakeResult:
             returncode = 0
-            stdout = _json.dumps(envelope_dict)
             stderr = ""
+        FakeResult.stdout = stdout
 
         monkeypatch.setattr(O, "_ensure_proxy_running", lambda: None)
         monkeypatch.setattr(O, "_PROXY_IP", "127.0.0.1")
@@ -901,15 +964,17 @@ class TestResearchToolUseGate:
         monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "test-placeholder")
         return O
 
-    def test_gate_drops_when_no_server_tool_calls(self, monkeypatch):
-        envelope = {
-            "result": "Plausible-but-fabricated prose with bogus URLs.",
-            "is_error": False,
-            "usage": {"server_tool_use": {
-                "web_search_requests": 0, "web_fetch_requests": 0,
-            }},
-        }
-        O = self._stub_envelope(monkeypatch, envelope)
+    def test_gate_drops_when_no_tool_uses_in_stream(self, monkeypatch):
+        """No tool_use block in the stream → no web call → drop.
+        Matches the confabulation case where the agent answers in one
+        shot from training data."""
+        O = self._stub_stream(
+            monkeypatch,
+            envelope={
+                "result": "Plausible-but-fabricated prose with bogus URLs.",
+                "is_error": False,
+            },
+        )
         out = O.spawn_agent_container_direct(
             system_prompt="s", user_prompt="u", model="m",
             allowed_tools="WebSearch WebFetch", raw_text=True,
@@ -917,15 +982,22 @@ class TestResearchToolUseGate:
         )
         assert out == ""
 
-    def test_gate_passes_when_search_was_called(self, monkeypatch):
-        envelope = {
-            "result": "Real findings with verified URLs.",
-            "is_error": False,
-            "usage": {"server_tool_use": {
-                "web_search_requests": 2, "web_fetch_requests": 0,
-            }},
-        }
-        O = self._stub_envelope(monkeypatch, envelope)
+    def test_gate_passes_when_websearch_appears_in_stream(self, monkeypatch):
+        """A WebSearch tool_use block in the stream is the canonical
+        signal that the agent called the web. Independent of which
+        model the CLI dispatched the call to — and stable across CLI
+        version changes that might shift per-model counter fields."""
+        O = self._stub_stream(
+            monkeypatch,
+            events=[
+                _assistant_with_tool_uses("WebSearch"),
+                {"type": "user", "message": {"content": [{"type": "tool_result"}]}},
+            ],
+            envelope={
+                "result": "Real findings with verified URLs.",
+                "is_error": False,
+            },
+        )
         out = O.spawn_agent_container_direct(
             system_prompt="s", user_prompt="u", model="m",
             allowed_tools="WebSearch WebFetch", raw_text=True,
@@ -933,17 +1005,87 @@ class TestResearchToolUseGate:
         )
         assert out == "Real findings with verified URLs."
 
+    def test_gate_passes_with_webfetch_only(self, monkeypatch):
+        """WebFetch alone also counts — it's in WEB_TOOL_NAMES."""
+        O = self._stub_stream(
+            monkeypatch,
+            events=[_assistant_with_tool_uses("WebFetch")],
+            envelope={"result": "Fetched.", "is_error": False},
+        )
+        out = O.spawn_agent_container_direct(
+            system_prompt="s", user_prompt="u", model="m",
+            allowed_tools="WebSearch WebFetch", raw_text=True,
+            min_server_tool_calls=1,
+        )
+        assert out == "Fetched."
+
+    def test_gate_drops_when_only_non_web_tools_used(self, monkeypatch):
+        """The crucial false-positive guard: agent tried a non-web
+        tool (Read, Bash, etc.), the CLI either ran it or denied it,
+        and then the agent confabulated. The stream has tool_use
+        blocks but none in WEB_TOOL_NAMES → drop. This is what made a
+        previously-considered `num_turns >= 2` fallback unsafe — that
+        signal would have let this case through, since denied
+        tool_uses still bump num_turns."""
+        O = self._stub_stream(
+            monkeypatch,
+            events=[
+                _assistant_with_tool_uses("Read"),
+                {"type": "user", "message": {"content": [{
+                    "type": "tool_result", "is_error": True,
+                    "content": "Read tool not allowed",
+                }]}},
+            ],
+            envelope={
+                "result": "Confabulated prose after Read was denied.",
+                "is_error": False,
+                "num_turns": 3,  # would have falsely passed a num_turns gate
+                "permission_denials": [
+                    {"tool_name": "Read", "tool_use_id": "tu_0"},
+                ],
+            },
+        )
+        out = O.spawn_agent_container_direct(
+            system_prompt="s", user_prompt="u", model="m",
+            allowed_tools="WebSearch WebFetch", raw_text=True,
+            min_server_tool_calls=1,
+        )
+        assert out == ""
+
+    def test_gate_passes_regardless_of_dispatch_model(self, monkeypatch):
+        """The bug-report case in stream-json terms: a `WebSearch`
+        tool_use block is present in the stream, regardless of
+        whether the CLI internally dispatched the call to a helper
+        haiku. The gate signal is the structural block, not the
+        per-model bookkeeping that moved across CLI versions."""
+        O = self._stub_stream(
+            monkeypatch,
+            events=[_assistant_with_tool_uses("WebSearch")],
+            envelope={
+                "result": "Real findings via dispatched haiku.",
+                "is_error": False,
+                # Per-model counters in shape (a) and (b) intentionally
+                # zero/missing — proves we don't depend on them.
+                "usage": {"server_tool_use": {
+                    "web_search_requests": 0, "web_fetch_requests": 0,
+                }},
+            },
+        )
+        out = O.spawn_agent_container_direct(
+            system_prompt="s", user_prompt="u", model="m",
+            allowed_tools="WebSearch WebFetch", raw_text=True,
+            min_server_tool_calls=1,
+        )
+        assert out == "Real findings via dispatched haiku."
+
     def test_gate_inactive_by_default(self, monkeypatch):
-        """Without min_server_tool_calls, no gating — preserves existing
-        behaviour for callers that don't care (summarise phase, etc.)."""
-        envelope = {
-            "result": "summarised content",
-            "is_error": False,
-            "usage": {"server_tool_use": {
-                "web_search_requests": 0, "web_fetch_requests": 0,
-            }},
-        }
-        O = self._stub_envelope(monkeypatch, envelope)
+        """Without min_server_tool_calls, no gating — preserves
+        existing behaviour for callers that don't care
+        (summarise phase, etc.)."""
+        O = self._stub_stream(
+            monkeypatch,
+            envelope={"result": "summarised content", "is_error": False},
+        )
         out = O.spawn_agent_container_direct(
             system_prompt="s", user_prompt="u", model="m", raw_text=True,
         )
@@ -951,18 +1093,45 @@ class TestResearchToolUseGate:
 
     def test_is_error_drops_result(self, monkeypatch):
         """CLI is_error=true means the API call failed — `result` then
-        contains an error string. Letting it through would feed the error
-        into phase 2 as if it were upstream data."""
-        envelope = {
-            "result": "Invalid bearer token",
-            "is_error": True,
-            "usage": {"server_tool_use": {
-                "web_search_requests": 0, "web_fetch_requests": 0,
-            }},
-        }
-        O = self._stub_envelope(monkeypatch, envelope)
+        contains an error string. Letting it through would feed the
+        error into phase 2 as if it were upstream data."""
+        O = self._stub_stream(
+            monkeypatch,
+            envelope={"result": "Invalid bearer token", "is_error": True},
+        )
         out = O.spawn_agent_container_direct(
             system_prompt="s", user_prompt="u", model="m", raw_text=True,
+        )
+        assert out == ""
+
+    def test_no_result_event_drops(self, monkeypatch):
+        """If the CLI exits 0 but the stream contains no `result`
+        event (truncated buffer, format change), we have no envelope
+        to validate — drop and log instead of returning a partial."""
+        O = self._stub_stream(
+            monkeypatch,
+            events=[
+                {"type": "system"},
+                _assistant_with_tool_uses("WebSearch"),
+            ],
+        )
+        out = O.spawn_agent_container_direct(
+            system_prompt="s", user_prompt="u", model="m", raw_text=True,
+        )
+        assert out == ""
+
+    def test_security_drops_when_unallowed_tool_appears_in_stream(self, monkeypatch):
+        """Defense-in-depth: when allowed_tools is empty, no tool_use
+        block should ever appear. If one does, the CLI exposed
+        something we didn't ask for — drop and log."""
+        O = self._stub_stream(
+            monkeypatch,
+            events=[_assistant_with_tool_uses("Bash")],
+            envelope={"result": "ignored", "is_error": False},
+        )
+        out = O.spawn_agent_container_direct(
+            system_prompt="s", user_prompt="u", model="m",
+            allowed_tools="", raw_text=True,
         )
         assert out == ""
 
@@ -1010,27 +1179,34 @@ class TestResearchToolUseGate:
         assert len(s["result_preview"]) <= 500
 
     def test_verbose_logs_envelope_after_parse(self, monkeypatch, capsys):
-        """Verbose mode must emit the envelope summary right after parse,
-        regardless of whether the result is later dropped — so any
-        downstream `dropping` log line has the diagnostic context."""
-        envelope = {
-            "result": "ok",
-            "is_error": False,
-            "stop_reason": "end_turn",
-            "num_turns": 1,
-            "usage": {"server_tool_use": {
-                "web_search_requests": 0, "web_fetch_requests": 0,
-            }},
-        }
-        O = self._stub_envelope(monkeypatch, envelope)
+        """Verbose mode must emit the envelope summary right after
+        parse, regardless of whether the result is later dropped — so
+        any downstream `dropping` log line has the diagnostic
+        context. Includes the per-tool-name breakdown so a maintainer
+        can see what the agent actually called when the gate fires."""
+        O = self._stub_stream(
+            monkeypatch,
+            events=[_assistant_with_tool_uses("WebSearch", "Read")],
+            envelope={
+                "result": "ok",
+                "is_error": False,
+                "stop_reason": "end_turn",
+                "num_turns": 3,
+                "usage": {"server_tool_use": {
+                    "web_search_requests": 0, "web_fetch_requests": 0,
+                }},
+            },
+        )
         monkeypatch.setenv("PANGOLIN_VERBOSE", "1")
         O.spawn_agent_container_direct(
             system_prompt="s", user_prompt="u", model="m", raw_text=True,
         )
         captured = capsys.readouterr().out
         assert "[verbose] direct envelope" in captured
-        assert '"num_turns": 1' in captured
-        assert '"web_search_requests": 0' in captured
+        assert '"num_turns": 3' in captured
+        # The tool-use breakdown surfaces both names.
+        assert "WebSearch" in captured
+        assert "Read" in captured
 
     def test_run_cycle_dumps_proxy_logs_when_verbose(self):
         """The verbose post-cycle proxy log dump is the bridge between
