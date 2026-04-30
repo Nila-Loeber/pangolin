@@ -48,7 +48,7 @@ The `tests/test_security.py` suite is the single source of truth for the securit
 
 Two ports:
 - **3128 tight** — `api.anthropic.com`, `api.github.com`, `github.com`, `ghcr.io`, `pypi.org`, `files.pythonhosted.org`, `gvisor.dev`, `storage.googleapis.com`, `dl-cdn.alpinelinux.org`, `registry.npmjs.org`. Default for all modes.
-- **3129 loose** — any HTTPS host. Used **only** by research-search (WebFetch is client-side and needs arbitrary web reach).
+- **3129 loose** — any HTTPS host. Used **only** by research-search. Anthropic's `web_search_*` / `web_fetch_*` server-side tools are also allowlisted on this port (see `LOOSE_PORT_TOOL_TYPE_PREFIXES`); tight blocks them.
 
 Phase A+B both live, implemented in one mitmproxy addon at
 `src/pangolin/pangolin_egress.py` (no squid, no ICAP, no side-process
