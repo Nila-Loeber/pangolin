@@ -672,17 +672,85 @@ def _redact_token(cmd: list[str]) -> list[str]:
     return out
 
 
-def _server_tool_use_count(envelope: dict) -> int:
-    """Sum of web_search + web_fetch invocations from CLI envelope.usage.
+# CLI tool names that count as "the agent reached out to the web". These
+# are the names the model emits in `tool_use` blocks of the CLI's
+# stream-json output — what we read with `_count_web_tool_uses`.
+WEB_TOOL_NAMES: frozenset[str] = frozenset({"WebSearch", "WebFetch"})
 
-    The Claude CLI surfaces server-side tool use under
-    `usage.server_tool_use.{web_search_requests, web_fetch_requests}`.
-    Both > 0 means the agent actually reached out — vs `0` which means it
-    answered from training data (or the proxy blocked the server-tool
-    request body — see PR #433 incident: empty SERVER_TOOL_ALLOWLIST in
-    pangolin_egress.py blocks `web_search_20250305` etc.)."""
-    sut = envelope.get("usage", {}).get("server_tool_use", {}) or {}
-    return (sut.get("web_search_requests") or 0) + (sut.get("web_fetch_requests") or 0)
+
+def _parse_stream_json(stdout: str) -> list[dict]:
+    """Parse claude CLI's newline-delimited stream-json output.
+
+    Each non-blank line is one event. We tolerate decode errors per-
+    line (stderr-style noise mixed in, partial buffer flushes, etc.)
+    so a single malformed line can't lose the whole stream."""
+    events: list[dict] = []
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line or not line.startswith("{"):
+            continue
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return events
+
+
+def _result_envelope(events: list[dict]) -> dict | None:
+    """Return the final `result` event — the legacy single-envelope
+    JSON with is_error, result, usage, modelUsage, num_turns, etc."""
+    for event in reversed(events):
+        if isinstance(event, dict) and event.get("type") == "result":
+            return event
+    return None
+
+
+def _iter_tool_use_blocks(events: list[dict]):
+    """Yield every `tool_use` content block from `assistant` events,
+    tolerating malformed shapes (the stream-json output can mix in
+    rate-limit events, partial messages, etc.)."""
+    for event in events:
+        if not isinstance(event, dict) or event.get("type") != "assistant":
+            continue
+        msg = event.get("message")
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                yield block
+
+
+def _tool_use_breakdown(events: list[dict]) -> dict[str, int]:
+    """Per-tool-name count of `tool_use` blocks in the stream. Used for
+    diagnostic logging — if a future CLI surfaces a new helper or
+    renames a tool, this surfaces the actual names that appeared so a
+    maintainer can adjust `WEB_TOOL_NAMES` without spelunking."""
+    counts: dict[str, int] = {}
+    for block in _iter_tool_use_blocks(events):
+        name = block.get("name") or "<unknown>"
+        counts[name] = counts.get(name, 0) + 1
+    return counts
+
+
+def _count_tool_uses(events: list[dict], names: frozenset[str] | None = None) -> int:
+    """Count `tool_use` blocks in the stream whose `name` is in `names`
+    (or any name if `names is None`).
+
+    This is the canonical signal that the agent invoked a given tool —
+    every tool call surfaces here as a structural block in an
+    `assistant`-typed event's `message.content`, regardless of which
+    model the CLI dispatches the call to or where it stashes per-model
+    bookkeeping counters. Replaced the previous approach of summing
+    `usage.server_tool_use.*` + `modelUsage[*].webSearchRequests`,
+    which broke when a CLI update started routing web tools through a
+    helper haiku and the count moved out of the top-level field."""
+    return sum(
+        1 for block in _iter_tool_use_blocks(events)
+        if names is None or block.get("name") in names
+    )
 
 
 def _envelope_summary(envelope: dict) -> dict:
@@ -705,6 +773,9 @@ def _envelope_summary(envelope: dict) -> dict:
         "total_cost_usd": envelope.get("total_cost_usd"),
         "permission_denials": envelope.get("permission_denials"),
         "usage": envelope.get("usage"),
+        # Per-model breakdown — needed because the CLI's WebSearch/WebFetch
+        # dispatch to a helper haiku surfaces here, not in usage.server_tool_use.
+        "modelUsage": envelope.get("modelUsage"),
         "result_preview": (envelope.get("result") or "")[:500],
     }
 
@@ -731,10 +802,11 @@ def spawn_agent_container_direct(
     `egress_tier`: "tight" (Anthropic+GH allowlist, default) or "loose" (any
     HTTPS — only research-search-WebFetch needs this).
 
-    `min_server_tool_calls`: if >0, drop the result when the CLI envelope
-    reports fewer web_search + web_fetch invocations. Used by the
-    research-search phase to refuse training-data confabulation: phase 1
-    must actually call out to the web, otherwise its "findings" are made up.
+    `min_server_tool_calls`: if >0, drop the result when the CLI's
+    stream-json output contains fewer than that many `WebSearch` or
+    `WebFetch` `tool_use` blocks. Used by the research-search phase to
+    refuse training-data confabulation: phase 1 must actually call out
+    to the web, otherwise its "findings" are made up.
     """
     if not os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
         raise RuntimeError("spawn_agent_container_direct needs CLAUDE_CODE_OAUTH_TOKEN in env")
@@ -746,15 +818,19 @@ def spawn_agent_container_direct(
     base = _base_docker_flags(egress_tier=egress_tier)
     # Comma-separated single arg, matching claude CLI convention.
     tools_args = ["--allowedTools", allowed_tools.replace(" ", ",")] if allowed_tools.strip() else []
-    # Note: we deliberately do NOT add `--verbose` to the claude CLI here,
-    # because direct mode parses `result.stdout` as a single JSON envelope;
-    # verbose would prepend non-JSON log lines and break the parse. Verbose
-    # here only covers the docker-cmd + stderr/stdout logging around the call.
+    # `--output-format stream-json` emits one JSON event per line for
+    # every step in the agent loop (system, assistant turns with
+    # tool_use blocks, user turns with tool_result blocks, final
+    # result envelope). Required because the per-tool counter fields
+    # in the json envelope shifted across CLI versions; the structural
+    # `tool_use` blocks in the stream are the only stable signal of
+    # "did the agent invoke web tools?" — see _count_tool_uses.
+    # `--print` + `--output-format=stream-json` requires `--verbose`.
     docker_cmd = base + [
         AGENT_IMAGE,
         "claude", "--print",
         "--dangerously-skip-permissions",
-        "--output-format", "json",
+        "--output-format", "stream-json", "--verbose",
         "--model", model,
         "--system-prompt", nonce_system_prompt,
     ] + tools_args
@@ -779,22 +855,22 @@ def spawn_agent_container_direct(
     if verbose and result.stderr:
         log(f"  [verbose] direct stderr: {result.stderr}")
 
-    # Parse the CLI JSON envelope
-    try:
-        envelope = json.loads(result.stdout)
-    except json.JSONDecodeError:
+    # Parse the CLI stream-json output → list of events.
+    events = _parse_stream_json(result.stdout)
+    envelope = _result_envelope(events)
+    if envelope is None:
         if verbose:
-            # Without this dump we have no way to debug a CLI that
-            # produced something neither valid JSON nor an obvious error.
-            log(f"  [verbose] direct stdout (raw, unparseable): {result.stdout}")
-        log(f"  spawn_agent_container: CLI JSON envelope unparseable: {result.stdout[:200]}")
-        return {}
+            log(f"  [verbose] direct stdout (raw, no result event): {result.stdout[:2000]}")
+        log(f"  spawn_agent_container: CLI stream had no result event: {result.stdout[:200]}")
+        return {} if not raw_text else ""
 
     # Verbose: emit the envelope summary unconditionally so every drop-
     # reason below has enough context in the log to diagnose. This is the
     # diagnostic that PR #433's post-mortem found missing.
     if verbose:
-        log(f"  [verbose] direct envelope: {json.dumps(_envelope_summary(envelope), default=str)}")
+        summary = _envelope_summary(envelope)
+        summary["tool_uses"] = _tool_use_breakdown(events)
+        log(f"  [verbose] direct envelope: {json.dumps(summary, default=str)}")
 
     # CLI flagged the API call as failed (bad token, blocked endpoint,
     # rate-limit, etc.) — the `result` field then contains an error string,
@@ -807,29 +883,40 @@ def spawn_agent_container_direct(
         )
         return {} if not raw_text else ""
 
-    # Post-hoc security check: if we requested zero tools but the CLI
-    # envelope reports tool calls, something is wrong (CLI bug or bypass).
-    # Drop the result and log a security warning.
-    tool_calls = envelope.get("tool_calls", 0)
-    if not allowed_tools and tool_calls and tool_calls > 0:
-        log(f"  🔴 SECURITY: spawn_agent_container_direct had allowed_tools='' "
-            f"but CLI reported {tool_calls} tool call(s). Dropping result.")
-        return {} if not raw_text else ""
+    # Post-hoc security check: when we declared zero tools, no tool_use
+    # block should appear in the stream. If one does, the CLI exposed a
+    # tool we didn't ask for (or the agent bypassed `--allowedTools`).
+    # Drop and warn.
+    if not allowed_tools:
+        any_tool_uses = _count_tool_uses(events)
+        if any_tool_uses > 0:
+            log(f"  🔴 SECURITY: spawn_agent_container_direct had allowed_tools='' "
+                f"but the stream contains {any_tool_uses} tool_use block(s). "
+                f"Dropping result.")
+            return {} if not raw_text else ""
 
-    # Tool-use gate: when the caller requires the agent to actually use
-    # web tools (research-search phase), enforce it. The CLI envelope
-    # exposes server-tool counts under usage.server_tool_use; zero there
-    # while min_server_tool_calls>=1 means the agent answered from training
-    # data — typically because the proxy blocked the server-tool request
-    # body (PR #433 root cause). Drop so the issue stays open.
+    # Tool-use gate: when the caller requires the agent to actually
+    # use web tools (research-search phase), enforce it. We count the
+    # `tool_use` blocks the agent actually emitted with name in
+    # `WEB_TOOL_NAMES` — that's a structural fact in the CLI stream,
+    # not a per-model bookkeeping counter. Stable across CLI versions
+    # because the `tool_use` block is the canonical Agent-SDK shape
+    # (Agent SDK docs, agent-loop.md: "Claude produces output that
+    # includes tool calls, the SDK executes those tools..."). It's
+    # also exact: a denied tool_use wouldn't be in `WEB_TOOL_NAMES`
+    # (the agent only has WebSearch/WebFetch in `--allowedTools` for
+    # this mode), and a successful WebSearch call shows up here
+    # regardless of whether the CLI dispatched it to a helper model
+    # under the hood.
     if min_server_tool_calls:
-        used = _server_tool_use_count(envelope)
+        used = _count_tool_uses(events, WEB_TOOL_NAMES)
         if used < min_server_tool_calls:
             log(
-                f"  🟡 spawn_agent_container_direct: only {used} server-tool "
-                f"call(s) (need ≥{min_server_tool_calls}). Agent answered "
-                f"from training data — likely SERVER_TOOL_ALLOWLIST is "
-                f"blocking web_search/web_fetch at the proxy. Dropping result."
+                f"  🟡 spawn_agent_container_direct: {used} web tool_use "
+                f"block(s) in stream (need ≥{min_server_tool_calls}). "
+                f"Agent did not call out to the web — answered from "
+                f"training data or only invoked non-web tools. "
+                f"Dropping result."
             )
             return {} if not raw_text else ""
 

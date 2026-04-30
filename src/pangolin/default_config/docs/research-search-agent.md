@@ -31,9 +31,9 @@ performs the actual fetch/search and returns results to the next turn.
 - `WebFetch` — fetch a URL and summarise / excerpt.
 
 You **must** call at least one of these per request — the orchestrator
-drops your output if `usage.server_tool_use.{web_search_requests,
-web_fetch_requests}` is zero (no real source = no fragment = retry next
-cycle). Don't answer from memory; always search.
+drops your output if no `WebSearch`/`WebFetch` tool_use block appears
+in the CLI's stream (no real source = no fragment = retry next cycle).
+Don't answer from memory; always search.
 
 No Read, Write, Edit, Bash, Glob, Grep. Your writable surface is
 nothing — you only emit text.
