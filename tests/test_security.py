@@ -1,5 +1,5 @@
 """Security test suite for Pangolin. Structured by SFR."""
-import subprocess, sys
+import json, subprocess, sys
 from pathlib import Path
 import pytest, yaml
 
@@ -414,13 +414,33 @@ class TestMitmPhaseB:
         )
 
     def test_server_tool_allowlist_empty_by_default(self):
-        """No pangolin mode needs Anthropic's server-side tools — the
-        starting policy denies them all. Changing this set should trip a
-        review."""
-        # Importing the addon needs mitmproxy installed; isolate the test
-        # to the constants by reading the file.
+        """No pangolin mode needs Anthropic's server-side tools on the
+        tight tier — the starting policy denies them all. Changing this
+        global set should trip a review (loose-port exceptions live in
+        LOOSE_PORT_TOOL_TYPE_PREFIXES)."""
         code = (REPO/"src/pangolin/pangolin_egress.py").read_text()
         assert "SERVER_TOOL_ALLOWLIST: set[str] = set()" in code
+
+    def test_loose_port_prefix_allowlist_only_web_tools(self):
+        """Loose-port server-tool prefix list is intentionally narrow:
+        web_search_* and web_fetch_* (CLI's WebSearch/WebFetch translate
+        to these via the Messages API). Adding `code_execution_*` or any
+        other family should be a deliberate, reviewed change."""
+        code = (REPO/"src/pangolin/pangolin_egress.py").read_text()
+        assert "LOOSE_PORT_TOOL_TYPE_PREFIXES" in code
+        assert '"web_search_"' in code
+        assert '"web_fetch_"' in code
+        # Negative: code_execution must not be in the loose prefix list.
+        # (It might appear elsewhere in a comment — scope the check to the
+        # prefix tuple specifically.)
+        import re
+        m = re.search(
+            r"LOOSE_PORT_TOOL_TYPE_PREFIXES.*?\)",
+            code, re.DOTALL,
+        )
+        assert m, "LOOSE_PORT_TOOL_TYPE_PREFIXES tuple not found"
+        assert "code_execution" not in m.group(0), \
+            "code_execution must not be allowlisted on loose port"
 
     def test_addon_authorization_rewrite(self):
         code = (REPO/"src/pangolin/pangolin_egress.py").read_text()
@@ -445,6 +465,73 @@ class TestMitmPhaseB:
         assert '("POST", "/v1/messages")' in code
         # Helper exists and is referenced by request()
         assert "_endpoint_allowed" in code
+
+    def _load_egress_module(self):
+        """Import pangolin_egress with mitmproxy stubbed out — we only need
+        the pure-Python policy helpers, not the addon hooks."""
+        import sys, types, importlib
+        mitm = types.ModuleType("mitmproxy")
+        mitm.http = types.ModuleType("mitmproxy.http")
+        mitm.tls = types.ModuleType("mitmproxy.tls")
+        sys.modules.setdefault("mitmproxy", mitm)
+        sys.modules.setdefault("mitmproxy.http", mitm.http)
+        sys.modules.setdefault("mitmproxy.tls", mitm.tls)
+        if "pangolin.pangolin_egress" in sys.modules:
+            return importlib.reload(sys.modules["pangolin.pangolin_egress"])
+        return importlib.import_module("pangolin.pangolin_egress")
+
+    def test_tool_type_allowed_per_port(self):
+        """Pure-policy unit test: web_search_* / web_fetch_* pass on loose,
+        block on tight; code_execution_* blocks on both."""
+        eg = self._load_egress_module()
+        # Tight: every server-tool type blocked.
+        assert not eg._tool_type_allowed("web_search_20250305", eg.TIGHT_PORT)
+        assert not eg._tool_type_allowed("web_fetch_20251020", eg.TIGHT_PORT)
+        assert not eg._tool_type_allowed("code_execution_20240522", eg.TIGHT_PORT)
+        # Loose: web_search/web_fetch allowed across versions, others denied.
+        assert eg._tool_type_allowed("web_search_20250305", eg.LOOSE_PORT)
+        assert eg._tool_type_allowed("web_search_20260209", eg.LOOSE_PORT)
+        assert eg._tool_type_allowed("web_fetch_20250910", eg.LOOSE_PORT)
+        assert eg._tool_type_allowed("web_fetch_20260309", eg.LOOSE_PORT)
+        assert not eg._tool_type_allowed("code_execution_20240522", eg.LOOSE_PORT)
+        # Future server-tool family default-denied even on loose port.
+        assert not eg._tool_type_allowed("bash_20250101", eg.LOOSE_PORT)
+
+    def test_validate_messages_body_per_port(self):
+        """End-to-end body-inspection: same JSON body, different port →
+        different verdict for web_search."""
+        eg = self._load_egress_module()
+        body = json.dumps({
+            "tools": [{"type": "web_search_20250305"}],
+        }).encode()
+        ok_loose, _ = eg._validate_messages_body(body, eg.LOOSE_PORT)
+        ok_tight, reason_tight = eg._validate_messages_body(body, eg.TIGHT_PORT)
+        assert ok_loose is True
+        assert ok_tight is False
+        assert "web_search_20250305" in reason_tight
+
+    def test_validate_messages_body_loose_still_blocks_code_exec(self):
+        """Even on loose, only the explicitly-listed prefixes pass."""
+        eg = self._load_egress_module()
+        body = json.dumps({
+            "tools": [{"type": "code_execution_20240522"}],
+        }).encode()
+        ok, reason = eg._validate_messages_body(body, eg.LOOSE_PORT)
+        assert ok is False
+        assert "code_execution" in reason
+
+    def test_validate_messages_body_custom_tool_passes(self):
+        """Custom tools (no `type` field) pass on both ports."""
+        eg = self._load_egress_module()
+        body = json.dumps({
+            "tools": [{
+                "name": "custom_tool", "description": "x",
+                "input_schema": {"type": "object", "properties": {}},
+            }],
+        }).encode()
+        for port in (eg.TIGHT_PORT, eg.LOOSE_PORT):
+            ok, _ = eg._validate_messages_body(body, port)
+            assert ok, f"custom tool wrongly blocked on port {port}"
 
     def test_endpoint_deny_precedes_token_injection(self):
         """A denied endpoint must be blocked before the Authorization

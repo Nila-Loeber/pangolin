@@ -83,9 +83,14 @@ field rejected — Anthropic's server-side tools (`web_fetch`,
 `web_search`, `code_execution`, ...) that a compromised agent could
 use to exfil data *through* api.anthropic.com to an attacker-chosen
 URL. Custom tools (`{name, description, input_schema}`) pass through.
-The allowlist (`SERVER_TOOL_ALLOWLIST`) starts empty — no pangolin
-mode needs server-side tools today; research phase 1 uses the CLI's
-client-side WebSearch/WebFetch, not the API's.
+The exact-match allowlist (`SERVER_TOOL_ALLOWLIST`) is empty by design.
+Per-port prefix exceptions live in `LOOSE_PORT_TOOL_TYPE_PREFIXES` —
+loose port (3129) only — currently `web_search_*` and `web_fetch_*`.
+The CLI's `WebSearch` and `WebFetch` are Anthropic server-side tools
+(verified in API docs + `usage.server_tool_use` envelope counters),
+so research-search phase 1 needs them allowed; the tight tier (which
+covers summarise + every other mode) keeps the block in force so
+untrusted-input phases have no opaque-to-pangolin exfil channel.
 
 ## Direct (json-schema) modes — post-Q1
 
