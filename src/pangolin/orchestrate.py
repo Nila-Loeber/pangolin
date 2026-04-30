@@ -27,7 +27,7 @@ import re
 import subprocess
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # Ensure imports work from repo root
@@ -179,6 +179,47 @@ def _write_sentinel_watermark(watermark: str):
     sentinel = _get_or_create_sentinel()
     gh("issue", "comment", str(sentinel), "--body", watermark, check=False)
     log(f"  sentinel watermark → {watermark[:19]}")
+
+
+def _next_iso_second(ts: str) -> str:
+    """Return the ISO timestamp one second after `ts`, in `...Z` form.
+
+    Used to advance the inbox watermark past the timestamp of the last
+    processed comment. The activity check uses `>=`, and storing `max
+    processed + 1s` makes the watermark act as an exclusive lower bound:
+    "next scan starts here". Previous scheme stored the literal
+    last-processed timestamp and compared with `>`; that left a one-
+    second boundary at which a comment's timestamp could equal the
+    watermark and be skipped permanently (HANDOVER-triage-watermark-
+    boundary.md, nlkw issue #164 from 2026-04-30T11:02:20Z).
+
+    Empty input → empty output (callers preserve existing
+    "no watermark yet" semantics).
+    """
+    if not ts:
+        return ts
+    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    return (dt + timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _has_new_inbox_activity(issue: dict, watermark: str) -> bool:
+    """True if the issue body or any non-bot, non-marker comment is at
+    or after the watermark. Comparison is `>=` because the stored
+    watermark is `max_processed + 1s` (see `_next_iso_second`)."""
+    if issue.get("createdAt", "") >= watermark:
+        return True
+    for c in issue.get("comments", []):
+        author = (c.get("author") or {}).get("login", "")
+        if "[bot]" in author or author.endswith("-agent"):
+            continue
+        # Orchestrator-posted comments carry AGENT_MARKER even though
+        # the GH author is the Owner (PAT). Skip those — they aren't
+        # new human activity.
+        if AGENT_MARKER in c.get("body", ""):
+            continue
+        if c.get("createdAt", "") >= watermark:
+            return True
+    return False
 
 
 # ── Lifecycle helpers ──
@@ -1734,25 +1775,10 @@ class CycleRunner:
         ssot = resolve_config("docs/inbox-triage.md").read_text()
         watermark = _read_sentinel_watermark()
 
-        # Pre-filter: only items with new activity since the watermark
-        # (issue body was created after it, OR a non-bot comment was added after it).
-        def _has_new_activity(issue: dict) -> bool:
-            if issue.get("createdAt", "") > watermark:
-                return True
-            for c in issue.get("comments", []):
-                author = (c.get("author") or {}).get("login", "")
-                if "[bot]" in author or author.endswith("-agent"):
-                    continue
-                # Orchestrator-posted comments carry AGENT_MARKER even though
-                # the GH author is the Owner (PAT). Skip those — they aren't
-                # new human activity.
-                if AGENT_MARKER in c.get("body", ""):
-                    continue
-                if c.get("createdAt", "") > watermark:
-                    return True
-            return False
-
-        pending = [i for i in all_inbox if _has_new_activity(i)]
+        # Pre-filter: only items with new activity since the watermark.
+        # See `_has_new_inbox_activity` and `_next_iso_second` for the
+        # `>=` boundary handling.
+        pending = [i for i in all_inbox if _has_new_inbox_activity(i, watermark)]
         log(f"triage: {len(pending)} of {len(all_inbox)} inbox items need triage")
 
         # Per-issue loop. SSoT goes into system (cached by providers.py).
@@ -1784,9 +1810,18 @@ class CycleRunner:
             if item_max > new_watermark:
                 new_watermark = item_max
 
+        # Store `max_processed + 1s` as the watermark so the next run's
+        # `>=` comparison treats the same comments as already-handled
+        # while picking up anything strictly newer (including comments at
+        # the +1s boundary). Without the +1s shift, comments whose
+        # timestamp equaled the watermark from a previous run were
+        # skipped permanently — HANDOVER-triage-watermark-boundary.md.
         if new_watermark > watermark:
-            _write_sentinel_watermark(new_watermark)
-        log(f"triage: {decisions_total} decisions across {len(pending)} items, watermark → {new_watermark[:19]}")
+            advanced = _next_iso_second(new_watermark)
+            _write_sentinel_watermark(advanced)
+            log(f"triage: {decisions_total} decisions across {len(pending)} items, watermark → {advanced[:19]}")
+        else:
+            log(f"triage: {decisions_total} decisions across {len(pending)} items, watermark → {watermark[:19]}")
 
     # ── RESEARCH (per-issue) ──
 

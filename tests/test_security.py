@@ -1417,6 +1417,106 @@ class TestWritingReferencedFiles:
         assert "TRUNCATED" in blobs[1]
 
 
+class TestInboxWatermarkBoundary:
+    """HANDOVER-triage-watermark-boundary.md regression (nlkw, 2026-04-30):
+    a comment whose timestamp equaled the stored watermark was permanently
+    skipped — strict `>` made the boundary instant unreachable.
+
+    Fix: store `max_processed + 1s` as the watermark so the read side can
+    use `>=` without re-processing already-handled comments. The +1s is
+    safe because GitHub timestamps are second-precision."""
+
+    def test_next_iso_second_advances_one_second(self):
+        from pangolin.orchestrate import _next_iso_second
+        assert _next_iso_second("2026-04-30T11:02:20Z") == "2026-04-30T11:02:21Z"
+
+    def test_next_iso_second_rolls_over_minute(self):
+        from pangolin.orchestrate import _next_iso_second
+        assert _next_iso_second("2026-04-30T11:02:59Z") == "2026-04-30T11:03:00Z"
+
+    def test_next_iso_second_rolls_over_day(self):
+        from pangolin.orchestrate import _next_iso_second
+        assert _next_iso_second("2026-04-30T23:59:59Z") == "2026-05-01T00:00:00Z"
+
+    def test_next_iso_second_empty_passthrough(self):
+        """Empty-string watermark (first-ever cycle) must stay empty —
+        the sentinel-write path uses `>` against the previous watermark
+        to decide whether to write at all."""
+        from pangolin.orchestrate import _next_iso_second
+        assert _next_iso_second("") == ""
+
+    def test_has_new_activity_at_exact_boundary_returns_true(self):
+        """The bug-repro case in unit form: a comment whose timestamp
+        equals the watermark is new work (because the watermark is
+        stored as `max_processed + 1s`)."""
+        from pangolin.orchestrate import _has_new_inbox_activity
+        issue = {
+            "createdAt": "2026-04-29T10:00:00Z",
+            "comments": [{
+                "author": {"login": "Nila-Loeber"},
+                "body": "Real human comment.",
+                "createdAt": "2026-04-30T11:02:20Z",
+            }],
+        }
+        assert _has_new_inbox_activity(issue, "2026-04-30T11:02:20Z") is True
+
+    def test_has_new_activity_strictly_below_watermark_returns_false(self):
+        """Already-processed comment (timestamp strictly below the
+        watermark) is not picked up again."""
+        from pangolin.orchestrate import _has_new_inbox_activity
+        issue = {
+            "createdAt": "2026-04-29T10:00:00Z",
+            "comments": [{
+                "author": {"login": "Nila-Loeber"},
+                "body": "Old comment.",
+                "createdAt": "2026-04-30T11:02:19Z",
+            }],
+        }
+        assert _has_new_inbox_activity(issue, "2026-04-30T11:02:20Z") is False
+
+    def test_has_new_activity_skips_bot_and_marker_comments(self):
+        """Filter parity with the original closure: bot-authored,
+        agent-authored, and AGENT_MARKER-bearing comments don't count
+        as new activity even if their timestamp is at or above the
+        watermark."""
+        from pangolin.orchestrate import _has_new_inbox_activity, AGENT_MARKER
+        issue = {
+            "createdAt": "2026-04-29T10:00:00Z",
+            "comments": [
+                {
+                    "author": {"login": "github-actions[bot]"},
+                    "body": "bot output",
+                    "createdAt": "2026-04-30T11:02:20Z",
+                },
+                {
+                    "author": {"login": "pangolin-agent"},
+                    "body": "agent output",
+                    "createdAt": "2026-04-30T11:02:20Z",
+                },
+                {
+                    "author": {"login": "Nila-Loeber"},
+                    "body": f"Owner-PAT-posted but pangolin's own: {AGENT_MARKER}",
+                    "createdAt": "2026-04-30T11:02:20Z",
+                },
+            ],
+        }
+        assert _has_new_inbox_activity(issue, "2026-04-30T11:02:20Z") is False
+
+    def test_workflow_shim_uses_inclusive_comparison(self):
+        """The precheck in agent-cycle.yml must mirror orchestrate's
+        `>=` semantics — otherwise the cycle never gets dispatched in
+        the first place even though triage's filter would have picked
+        the comment up. Look for the negated `>` form (bash has no
+        string `>=`) and an empty-latest guard so an empty inbox
+        doesn't fire spuriously."""
+        from pangolin.paths import resolve_config
+        wf = resolve_config("workflows/agent-cycle.yml").read_text()
+        assert '! [ "$watermark" \\> "$latest" ]' in wf, \
+            "precheck must use `! watermark > latest` (i.e. latest >= watermark)"
+        assert '[ -n "$latest" ]' in wf, \
+            "precheck must guard against empty `$latest` defaulting to epoch"
+
+
 class TestTriagePathsNoInboxWatermark:
     """DRIFT-6 regression: .inbox-watermark lives in a GitHub issue comment
     now (sentinel pattern). Mounting a nonexistent file path into agent

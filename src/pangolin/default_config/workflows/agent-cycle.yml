@@ -95,10 +95,18 @@ jobs:
                    | select((.author.login | test("\\[bot\\]$|-agent$")) | not)
                    | select((.body | contains("<!-- pangolin:auto -->")) | not)
                    | .createdAt] | max // empty' 2>/dev/null)
-              latest="${latest:-1970-01-01T00:00:00Z}"
-              if [ "$latest" \> "$watermark" ]; then
+              # Only fire on a real comment timestamp; an empty inbox
+              # returns "" here and must NOT be treated as has_work.
+              # `>=`: the stored watermark is `max_processed + 1s` (see
+              # `_next_iso_second` in orchestrate.py), so a comment whose
+              # timestamp equals the watermark is genuinely new work, not
+              # a re-trigger of an already-processed comment. Bash has no
+              # `>=` for strings; the negation of `watermark > latest`
+              # gives us `latest >= watermark` for lex-comparable ISO-Z
+              # timestamps.
+              if [ -n "$latest" ] && ! [ "$watermark" \> "$latest" ]; then
                 has_work="true"
-                reason="new human inbox comment ($latest > $watermark)"
+                reason="new human inbox comment ($latest >= $watermark)"
               fi
             fi
           fi

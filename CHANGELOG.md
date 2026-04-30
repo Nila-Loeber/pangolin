@@ -3,6 +3,45 @@
 Pangolin uses git tags as the version source of truth (`setuptools_scm`).
 This file documents the user-visible changes per tagged release.
 
+## v0.12.4 — 2026-04-30
+
+### Fixed
+
+- **Inbox comments at the exact watermark timestamp were skipped
+  forever.** Triage's activity filter compared comment `createdAt > watermark`
+  (strict). The watermark, in turn, was stored as the literal max
+  comment timestamp seen during the previous cycle. So a comment whose
+  timestamp equaled the stored watermark — readily produced when one
+  cycle's last processed comment shared a second with a comment that
+  arrived in the same instant — fell into a permanent dead zone:
+  `T == T` is false under `>`, every subsequent run reported `triage:
+  0 of 1 inbox items need triage`, and no `pangolin:auto` reply ever
+  appeared. Reproduced in nlkw against issue #164 (Owner comment at
+  `2026-04-30T11:02:20Z`, watermark advanced to the same value, comment
+  permanently invisible to triage).
+
+  Fix: store `max_processed + 1s` as the watermark and compare with
+  `>=` on the read side. The watermark now means "next scan starts
+  here" (exclusive lower bound on processed timestamps). GitHub's
+  ISO timestamps are second-precision, so the +1s shift lands exactly
+  one representable instant past the last processed comment with no
+  risk of overshoot. The same fix lands in the workflow-shim precheck
+  (`agent-cycle.yml`) — the precheck is what gates whether the cycle
+  runs at all, so without that change the orchestrator-side fix would
+  never have been exercised.
+
+  `_has_new_activity` was lifted out of the `_phase_triage` closure
+  into a module-level `_has_new_inbox_activity` so the boundary
+  semantics are unit-testable. Tests added for: +1s advancement
+  (incl. minute and day rollover), empty-watermark passthrough,
+  comment-at-exact-boundary returns true, comment strictly below
+  returns false, bot/agent/AGENT_MARKER filter parity, and the
+  workflow-shim shape.
+
+  No reprocessing of already-handled comments — those have timestamps
+  strictly below the new watermark and the `>=` comparison correctly
+  excludes them.
+
 ## v0.12.3 — 2026-04-30
 
 ### Fixed
