@@ -16,9 +16,7 @@ This file documents the user-visible changes per tagged release.
   arrived in the same instant — fell into a permanent dead zone:
   `T == T` is false under `>`, every subsequent run reported `triage:
   0 of 1 inbox items need triage`, and no `pangolin:auto` reply ever
-  appeared. Reproduced in nlkw against issue #164 (Owner comment at
-  `2026-04-30T11:02:20Z`, watermark advanced to the same value, comment
-  permanently invisible to triage).
+  appeared.
 
   Fix: store `max_processed + 1s` as the watermark and compare with
   `>=` on the read side. The watermark now means "next scan starts
@@ -42,6 +40,26 @@ This file documents the user-visible changes per tagged release.
   strictly below the new watermark and the `>=` comparison correctly
   excludes them.
 
+### Consumer action required
+
+The orchestrator-side fix lives in the package and lands automatically
+on the next cycle (`pip install pangolin@main` at workflow start). The
+**precheck** half of the fix lives in
+`src/pangolin/default_config/workflows/agent-cycle.yml`, which is
+copied into each wiki repo at `pangolin init` time and *not*
+re-synced afterwards. A wiki repo whose `agent-cycle.yml` predates
+v0.12.4 will keep using the strict-`>` precheck, and the cycle will
+never be dispatched for boundary-timestamp comments — meaning the
+in-package fix below it never runs. Sync the workflow shim by either:
+
+- copying the file from the package: `cp $(python -c 'import pangolin,
+  pathlib; print(pathlib.Path(pangolin.__file__).parent / "default_config"
+  / "workflows" / "agent-cycle.yml")') .github/workflows/agent-cycle.yml`,
+  or
+- re-running `pangolin init` in the wiki repo (idempotent for the
+  workflow file; review the diff before committing in case any local
+  edits exist).
+
 ## v0.12.3 — 2026-04-30
 
 ### Fixed
@@ -59,10 +77,11 @@ This file documents the user-visible changes per tagged release.
   and `json.loads` failed; the result was logged as `inner result not
   parseable: {` and the phase silently dropped the findings.
 
-  Reproduced in the retest of issue #432 (nlkw run 25158135887): the
-  search phase passed (real ver.di URLs, six `WebSearch` calls), but
+  Reproduced end-to-end against a research-mode ticket whose findings
+  contained code snippets in their bodies: the search phase passed
+  (multiple `WebSearch` calls, real URLs in the result preview), but
   the summarise phase emitted markdown-wrapped JSON that the parser
-  couldn't read, so research finished with "no findings for #432".
+  couldn't read, so research finished with "no findings".
 
   Replaced the regex with a balanced-bracket extractor built on
   `json.JSONDecoder.raw_decode`, which is string-escape- and
